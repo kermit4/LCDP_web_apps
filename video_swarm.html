@@ -1,0 +1,1348 @@
+<!DOCTYPE html>
+<html><head><title>CJP2P video chat + Swarm</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+#videos { display:flex; gap:8px; flex-wrap:wrap; }
+@media(orientation:portrait) { #videos { flex-direction:column; } }
+video, canvas { display:block; background:#000; }
+.vid-wrap { display:inline-block; position:relative; vertical-align:top; }
+.vid-label { font-size:11px; color:#888; }
+.fs-btn { position:absolute; top:18px; right:2px; opacity:0.75;
+          padding:1px 5px; font-size:15px; line-height:1; cursor:pointer; }
+.fs-btn:hover { opacity:1; }
+#controls { display:flex; align-items:center; gap:8px; margin:6px 0; }
+.led { width:12px; height:12px; border-radius:50%; border:1px solid #888;
+       background:#600; display:inline-block; flex-shrink:0; }
+.led.on { background:#e00; box-shadow:0 0 5px #e00; }
+.rx-led { background:#040; }
+.rx-led.on { background:#0d0; box-shadow:0 0 5px #0d0; }
+#vuMeter { display:inline-flex; gap:2px; align-items:center; width:90px; flex-shrink:0; }
+.vu-seg { width:5px; height:14px; background:#ddd; border-radius:1px; flex-shrink:0; }
+#logDiv { font-family:monospace; font-size:11px; white-space:pre-wrap;
+          word-break:break-all; max-height:30vh; overflow:auto; border:1px solid #ccc; padding:4px; }
+.tip-wrap { position:relative; cursor:help; border-bottom:1px dotted #888; display:inline; }
+.tip { display:none; position:absolute; z-index:20; background:#222; color:#eee;
+       font-family:sans-serif; font-size:11px; font-weight:normal; line-height:1.5;
+       padding:6px 9px; border-radius:5px; width:230px; bottom:calc(100% + 4px); left:0;
+       white-space:normal; box-shadow:0 2px 8px rgba(0,0,0,.5); pointer-events:none; }
+.tip-wrap:hover .tip, .tip-wrap.tip-open .tip { display:block; }
+
+/* Swarm section */
+#swarmSection { border-top:2px solid #555; margin-top:12px; padding-top:8px; font-size:13px; }
+#swarmSection table { border-collapse:collapse; }
+#swarmSection table td { padding:2px 6px 2px 0; vertical-align:middle; }
+#swarmSection input[type=text], #swarmSection input:not([type]) { font-size:12px; }
+#swarmStatus { font-size:11px; color:#555; margin-top:4px; }
+#swarmResult { font-size:11px; word-break:break-all; margin-top:6px; background:#f0f8f0;
+               border:1px solid #8c8; padding:6px; display:none; border-radius:4px; }
+#swarmResult code { font-size:10px; }
+.swarm-row { margin:4px 0; }
+.stamp-info { font-size:10px; color:#777; }
+</style>
+<!-- ethers.js v5 for EIP-712 Safe tx hashing — no integrity tag; add one for production -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/5.7.2/ethers.umd.min.js" crossorigin="anonymous"></script>
+</head>
+<body>
+their ed25519: <input id=their_ed25519 size=80>
+<br>share: <a id=link href=""></a>
+<br>ws url: <input id=ws_url size=50>
+<br><a href=/>status page</a>
+<p>
+<div id=videos>
+  <div class=vid-wrap>
+    <div class=vid-label>Local</div>
+    <video id=localVideo autoplay muted playsinline></video>
+    <button class=fs-btn id=fsLocal>&#x26F6;</button>
+  </div>
+  <div class=vid-wrap>
+    <div class=vid-label>Remote</div>
+    <canvas id=remoteCanvas width=320 height=240></canvas>
+    <button class=fs-btn id=fsRemote>&#x26F6;</button>
+  </div>
+</div>
+<div id=controls>
+  <span class=led id=recLed title="mic recording"></span>
+  <div id=vuMeter></div>
+  <button id=muteAudioBtn>Unmute Mic</button>
+  <button id=muteVideoBtn>Unmute Video</button>
+  <span class="led rx-led" id=rxLed title="rx audio"></span>
+  <button id=echoCancelBtn>Echo: On</button>
+  <button id=noiseBtn>Noise: Off</button>
+  <button id=gainBtn>Gain: Off</button>
+  <button id=debugBtn>debug log</button>
+  <button id=diagBtn>Diag: Off</button>
+</div>
+<pre id=stats style="font-size:11px;margin:4px 0;"></pre>
+<div id=logDiv></div>
+
+<!-- ================================================================
+     SWARM RECORDING SECTION
+     ================================================================ -->
+<div id=swarmSection>
+<b>&#x1F41D; Swarm Recording</b>
+<small style="color:#888"> &mdash; record this call and store it on decentralised Swarm storage,
+paid for by the shared Gnosis Safe of both callers</small>
+
+<table style="margin:6px 0">
+  <tr>
+    <td>Bee node URL:</td>
+    <td><input id=beeUrl type=text value="http://localhost:1633" size=35></td>
+    <td>&nbsp;<button id=checkBeeBtn>Check</button> <span id=beeStatus></span></td>
+  </tr>
+  <tr>
+    <td>Gnosis Safe address:</td>
+    <td><input id=safeAddr type=text size=45 placeholder="0x… shared 2-of-2 Safe on Gnosis Chain"></td>
+    <td>&nbsp;<button id=connectWalletBtn>Connect Wallet</button>
+        <span id=myEthAddrEl style="font-size:10px;color:#666;"></span></td>
+  </tr>
+  <tr id=theirEthRow>
+    <td>Peer ETH address:</td>
+    <td><input id=theirEth type=text size=45 placeholder="auto-filled when peer connects wallet"></td>
+    <td><span id=theirEthStatus style="font-size:10px;color:#888;"></span></td>
+  </tr>
+</table>
+
+<div class=swarm-row>
+  <b>Postage Stamp</b>
+  <span class=stamp-info>(stamps authorise Swarm nodes to store your data; paid in xBZZ on Gnosis Chain)</span><br>
+  Batch ID: <input id=batchId type=text size=66 placeholder="paste existing batch ID, or buy one below">
+  <button id=checkStampBtn>Check</button><br>
+  Depth: <input id=stampDepth type=text value="20" size=4>
+  <span class=stamp-info>capacity = 4&nbsp;KB &times; 2<sup>depth</sup> &nbsp;|&nbsp; 20 &asymp; 4&nbsp;GB</span>
+  &nbsp;&nbsp;Amount&nbsp;(PLUR/chunk): <input id=stampAmount type=text value="10000000" size=14>
+  <span class=stamp-info>(higher = longer TTL)</span><br>
+  <div style="margin-top:4px">
+    <button id=buyStampBtn>Buy stamp via Bee node</button>
+    <span class=stamp-info>— requires xBZZ already in Bee node wallet</span>
+    &nbsp;&nbsp;
+    <button id=proposeSafeBtn>Propose Safe payment</button>
+    <span class=stamp-info>— sends xBZZ from Safe to Bee node wallet; both callers must then sign</span>
+    &nbsp;&nbsp;
+    <button id=signPendingBtn>Sign pending Safe tx</button>
+  </div>
+  <div id=safeApiRow style="font-size:11px;color:#777;margin-top:2px">
+    Safe Transaction Service:
+    <input id=safeApiUrl type=text value="https://safe-transaction-gnosis-chain.safe.global/api/v1" size=60>
+  </div>
+  <div id=bzzAmountRow style="font-size:11px;color:#777;margin-top:2px">
+    xBZZ to send to Bee node wallet:
+    <input id=bzzSendAmount type=text value="20000000000000000000" size=25>
+    <span class=stamp-info>(in wei, 18 decimals &mdash; default 20 xBZZ)</span>
+  </div>
+  <div id=stampStatus style="font-size:11px;color:#444;margin-top:3px;"></div>
+</div>
+
+<div class=swarm-row style="margin-top:8px">
+  <span class="led" id=recLedSwarm></span>
+  &nbsp;<button id=startRecBtn>&#x23FA; Start Recording</button>
+  <button id=stopRecBtn disabled>&#x23F9; Stop Recording</button>
+  &nbsp;&nbsp;
+  <button id=uploadSwarmBtn>&#x2B06; Upload to Swarm</button>
+  <span id=recStatus style="font-size:11px;color:#555;"></span>
+</div>
+
+<div id=swarmResult></div>
+<div id=swarmStatus></div>
+</div>
+<!-- end Swarm section -->
+
+<script>
+const their_ed25519 = document.getElementById('their_ed25519');
+const link          = document.getElementById('link');
+const localVideo    = document.getElementById('localVideo');
+const remoteCanvas  = document.getElementById('remoteCanvas');
+const recLed        = document.getElementById('recLed');
+const rxLed         = document.getElementById('rxLed');
+const muteAudioBtn  = document.getElementById('muteAudioBtn');
+const muteVideoBtn  = document.getElementById('muteVideoBtn');
+const debugBtn      = document.getElementById('debugBtn');
+const logDiv        = document.getElementById('logDiv');
+const ws_url_input  = document.getElementById('ws_url');
+ws_url_input.value  = 'ws://localhost:24255/wt';
+ws_url_input.onchange = () => { if (socket) socket.close(); };
+
+// -- VU meter (12 fixed-width segments, never reflows) ------------------------
+const VU_N = 12;
+const vuSegs = Array.from({length: VU_N}, () => {
+    const s = document.createElement('div');
+    s.className = 'vu-seg';
+    document.getElementById('vuMeter').appendChild(s);
+    return s;
+});
+function setVU(v) {
+    const lit = Math.round(v * VU_N);
+    vuSegs.forEach((s, i) => {
+        s.style.background = i >= lit ? '#ddd'
+            : i < VU_N * 0.6 ? '#0a0'
+            : i < VU_N * 0.85 ? '#aa0' : '#d00';
+    });
+}
+setVU(0);
+
+// -- LEDs ---------------------------------------------------------------------
+function setLed(el, on) { el.classList.toggle('on', on); }
+
+// -- logging ------------------------------------------------------------------
+let logging = false;
+debugBtn.onclick = () => { logging = !logging; };
+const diagBtn = document.getElementById('diagBtn');
+diagBtn.onclick = () => {
+    diagEnabled = !diagEnabled;
+    diagBtn.textContent = diagEnabled ? 'Diag: On' : 'Diag: Off';
+};
+function log_always(...a) {
+    const d = document.createElement('div');
+    d.textContent = `[${new Date().toLocaleTimeString()}] ${a.join(' ')}`;
+    logDiv.appendChild(d);
+    while (logDiv.children.length > 500) logDiv.removeChild(logDiv.firstChild);
+    if (logging) logDiv.scrollTop = logDiv.scrollHeight;
+}
+function log(...a) { if (logging) log_always(...a); }
+window.onerror = (m, u, l, c, e) => { log_always('ERROR:', m, '@', l+':'+c); if (e?.stack) log_always(e.stack); return false; };
+window.onunhandledrejection = e => log_always('UNHANDLED:', e.reason?.stack || e.reason || e);
+
+// -- base64 -------------------------------------------------------------------
+function u8toB64(u8) {
+    let s = ''; const C = 0x8000;
+    for (let i = 0; i < u8.length; i += C) s += String.fromCharCode.apply(null, u8.subarray(i, i+C));
+    return btoa(s);
+}
+function b64ToU8(b64) {
+    const s = atob(b64), u8 = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) u8[i] = s.charCodeAt(i);
+    return u8;
+}
+
+// -- identity -----------------------------------------------------------------
+let my_ed25519 = null;
+function update_links() {
+    if (!my_ed25519) return;
+    const url = location.origin + location.pathname + '?ed25519=' + my_ed25519;
+    link.href = url; link.textContent = url;
+}
+their_ed25519.addEventListener('input', update_links);
+their_ed25519.addEventListener('change', () => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('ed25519')) {
+        params.set('ed25519', their_ed25519.value);
+        history.replaceState(null, '', window.location.pathname + '?' + params.toString());
+    }
+});
+
+// -- fullscreen ---------------------------------------------------------------
+function goFullscreen(el) {
+    (el.requestFullscreen || el.webkitRequestFullscreen || (() => {})).call(el);
+}
+document.getElementById('fsLocal').onclick  = () => goFullscreen(localVideo);
+document.getElementById('fsRemote').onclick = () => goFullscreen(remoteCanvas);
+
+// -- fit element to wxh, longest side = 320px --------------------------------
+const MAX_DIM = 320;
+function fitEl(el, w, h) {
+    const scale = Math.min(MAX_DIM / w, MAX_DIM / h, 1);
+    el.style.width  = Math.round(w * scale) + 'px';
+    el.style.height = Math.round(h * scale) + 'px';
+}
+fitEl(localVideo, 320, 240);
+
+// -- state --------------------------------------------------------------------
+let camStream    = null;
+let encoder      = null;
+let decoder      = null;
+let frameReader  = null;
+let needKeyframe = true;
+let frameCount   = 0;
+let videoMuted   = true;
+let micActive    = false;
+let videoSeqSent = Date.now();
+let videoSeqRecv = 0;
+
+// -- audio state --------------------------------------------------------------
+let echoCancel    = true;
+let noiseSuppress = false;
+let autoGain      = false;
+let micSrc          = null;
+let audioCtx        = null;
+let recordProc      = null;
+let playProc        = null;
+let audioEncoder    = null;
+let audioDecoder    = null;
+let audioTsCounter  = 0;
+let offset_sent     = Date.now();
+let offset_received = 0;
+let lastSample      = 0;
+
+let videoDrops = 0, lastVideoDropMs = null, hasFirstVideo = false;
+let audioDrops = 0, lastAudioDropMs = null, hasFirstAudio = false;
+let videoDelayMs = 0;
+const videoQueue = [];
+const videoPending = new Map();
+const audioPending = new Map();
+let sendW = 0, sendH = 0;
+let lastVideoFrame = null;
+
+const CHART_W = 320;
+const CHART_MS_PER_COL = 200;
+const CHART_MAX_RTT = 500;
+const audioChartData = new Array(CHART_W).fill(null);
+const videoChartData = new Array(CHART_W).fill(null);
+let latChartCursor = Math.floor(Date.now() / CHART_MS_PER_COL) % CHART_W;
+let diagEnabled = false;
+let audioPingSeq = 0, videoPingSeq = 0;
+const pendingAudioPings = new Map();
+const pendingVideoPings = new Map();
+let audioFramesSent = 0, videoFramesSent = 0;
+let lastAudioRtt = null, lastRemoteBuf = null;
+
+const BPS_WINDOW_MS = 5000;
+const keyframeBits   = [];
+const deltaframeBits = [];
+
+const RING_SIZE  = 32768;
+const AUDIO_RATE = 48000;
+const SP_FRAMES  = 512;
+const MIN_BUF    = SP_FRAMES;
+const MAX_BUF    = 24000;
+let   audioBufTarget = MIN_BUF;
+const ring = new Float32Array(RING_SIZE);
+let writeIdx = 0, readIdx = 0;
+let inUnderrun = false;
+
+// -- audio receive decoder ----------------------------------------------------
+if ('AudioDecoder' in window) {
+    audioDecoder = new AudioDecoder({
+        output: audioData => {
+            const pcm = new Float32Array(audioData.numberOfFrames);
+            audioData.copyTo(pcm, { planeIndex: 0, format: 'f32-planar' });
+            audioData.close();
+            setLed(rxLed, true);
+            const resuming = (writeIdx === readIdx);
+            const rampLen = resuming ? Math.min(SP_FRAMES, pcm.length) : 0;
+            for (let i = 0; i < pcm.length; i++) {
+                ring[writeIdx] = i < rampLen ? pcm[i] * (i / rampLen) : pcm[i];
+                writeIdx = (writeIdx + 1) & (RING_SIZE - 1);
+                if (writeIdx === readIdx) readIdx = (readIdx + SP_FRAMES) & (RING_SIZE - 1);
+            }
+            const depth = (writeIdx - readIdx + RING_SIZE) & (RING_SIZE - 1);
+            if (depth > audioBufTarget + SP_FRAMES * 2) {
+                readIdx = (writeIdx - audioBufTarget) & (RING_SIZE - 1);
+            }
+        },
+        error: e => log_always('audio decoder err:', e.message || e)
+    });
+    try { audioDecoder.configure({ codec:'opus', sampleRate:48000, numberOfChannels:1 }); }
+    catch(e) { log_always('AudioDecoder configure failed:', e.message); audioDecoder = null; }
+}
+
+// -- video decoder ------------------------------------------------------------
+function makeDecoder(w, h) {
+    const d = new VideoDecoder({
+        output: frame => {
+            if (remoteCanvas.width !== frame.displayWidth || remoteCanvas.height !== frame.displayHeight) {
+                remoteCanvas.width  = frame.displayWidth;
+                remoteCanvas.height = frame.displayHeight;
+                fitEl(remoteCanvas, frame.displayWidth, frame.displayHeight);
+            }
+            createImageBitmap(frame).then(bm => {
+                videoQueue.push({ bm, due: Date.now() + videoDelayMs });
+            });
+            frame.close();
+            needKeyframe = false;
+        },
+        error: e => { log_always('video decoder err:', e.message || e); needKeyframe = true; }
+    });
+    const cfg = { codec: 'vp8' };
+    if (w && h) { cfg.codedWidth = w; cfg.codedHeight = h; }
+    d.configure(cfg);
+    return d;
+}
+
+// -- audio context + playback -------------------------------------------------
+async function ensureAudioCtx() {
+    if (audioCtx) { await audioCtx.resume(); return; }
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+    await audioCtx.resume();
+    const hwLatency = (audioCtx.outputLatency || 0) + (audioCtx.baseLatency || 0);
+    log_always('audio hw latency reported:', Math.round(hwLatency*1000)+'ms  adaptive buffer: '+Math.round(MIN_BUF/AUDIO_RATE*1000)+'ms-'+Math.round(MAX_BUF/AUDIO_RATE*1000)+'ms');
+    playProc = audioCtx.createScriptProcessor(SP_FRAMES, 1, 1);
+    playProc.onaudioprocess = e => {
+        const out = e.outputBuffer.getChannelData(0);
+        let underrun = false;
+        for (let i = 0; i < out.length; i++) {
+            if (readIdx !== writeIdx) {
+                lastSample = ring[readIdx];
+                out[i] = lastSample;
+                readIdx = (readIdx + 1) & (RING_SIZE - 1);
+            } else {
+                lastSample *= 0.997;
+                out[i] = lastSample;
+                underrun = true;
+            }
+        }
+        if (underrun) {
+            setLed(rxLed, false);
+            if (!inUnderrun) audioBufTarget = Math.min(MAX_BUF, audioBufTarget + SP_FRAMES * 4);
+            inUnderrun = true;
+        } else {
+            inUnderrun = false;
+        }
+        audioBufTarget = Math.max(MIN_BUF, audioBufTarget - 4);
+        videoDelayMs = Math.round(audioBufTarget / AUDIO_RATE * 1000);
+    };
+    playProc.connect(audioCtx.destination);
+    log_always('audio playback ready');
+}
+document.addEventListener('click', () => ensureAudioCtx().catch(() => {}), { once: true });
+
+// -- start camera + mic -------------------------------------------------------
+async function startCameraAndMic() {
+    await ensureAudioCtx();
+    if (!camStream) {
+        try {
+            camStream = await navigator.mediaDevices.getUserMedia({
+                video: { width:{ max:640 }, height:{ max:640 }, frameRate:{ ideal:24, max:30 } },
+                audio: { channelCount:1, sampleRate:48000,
+                         echoCancellation:echoCancel, noiseSuppression:noiseSuppress, autoGainControl:autoGain }
+            });
+        } catch(e) { log_always('getUserMedia failed:', e.message || e); return false; }
+
+        localVideo.srcObject = camStream;
+        const vt = camStream.getVideoTracks()[0];
+        const s  = vt.getSettings();
+        let encW = s.width  || 320;
+        let encH = s.height || 240;
+        const FPS = s.frameRate || 24;
+        const KEYFRAME_EVERY = Math.max(1, Math.round(FPS / 2));
+        log_always('camera:', encW, 'x', encH, '@', FPS, 'fps  keyframe every', KEYFRAME_EVERY);
+        fitEl(localVideo, encW, encH);
+
+        function configureEncoder(w, h) {
+            encoder.configure({ codec:'vp8', width:w, height:h, bitrate:200_000, framerate:FPS });
+            encW = w; encH = h; sendW = w; sendH = h; frameCount = 0;
+        }
+
+        if ('VideoEncoder' in window) {
+            encoder = new VideoEncoder({
+                output: chunk => {
+                    if (videoMuted || socket.readyState !== WebSocket.OPEN || !their_ed25519.value) return;
+                    const data = new Uint8Array(chunk.byteLength);
+                    chunk.copyTo(data);
+                    (chunk.type === 'key' ? keyframeBits : deltaframeBits).push({ t: Date.now(), bytes: chunk.byteLength });
+                    videoSeqSent++;
+                    log('video', chunk.type, chunk.byteLength+'B seq'+videoSeqSent);
+                    const vmsgs = [{VideoFrame:{ codec:'vp8', keyframe: chunk.type==='key',
+                                                 seq: videoSeqSent, w: encW, h: encH,
+                                                 data: u8toB64(data) }}];
+                    if (diagEnabled && ++videoFramesSent % 5 === 0) {
+                        const seq = ++videoPingSeq;
+                        pendingVideoPings.set(seq, Date.now());
+                        vmsgs.push({VideoPing:{seq, t: Date.now()}});
+                    }
+                    socket.send(JSON.stringify([{Forward:{
+                        to_ed25519: their_ed25519.value,
+                        messages: vmsgs
+                    }}]));
+                },
+                error: e => log_always('video encoder err:', e.message || e)
+            });
+            try { configureEncoder(encW, encH); }
+            catch(e) { log_always('VideoEncoder configure failed:', e.message || e); encoder = null; }
+        }
+
+        if (encoder) {
+            const proc = new MediaStreamTrackProcessor({ track: vt });
+            frameReader = proc.readable.getReader();
+            (async () => {
+                while (true) {
+                    let r;
+                    try { r = await frameReader.read(); } catch { break; }
+                    if (r.done) break;
+                    const frame = r.value;
+                    if (videoMuted) { frame.close(); continue; }
+                    if (frame.codedWidth !== encW || frame.codedHeight !== encH) {
+                        log_always('rotation:', frame.codedWidth, 'x', frame.codedHeight);
+                        try { await encoder.flush(); } catch {}
+                        configureEncoder(frame.codedWidth, frame.codedHeight);
+                        fitEl(localVideo, frame.codedWidth, frame.codedHeight);
+                    }
+                    if (encoder.encodeQueueSize > 2) { frame.close(); continue; }
+                    const keyFrame = (frameCount % KEYFRAME_EVERY === 0);
+                    try { encoder.encode(frame, { keyFrame }); } catch(e) { log_always('encode err:', e); }
+                    frame.close();
+                    frameCount++;
+                }
+            })();
+        }
+
+        decoder = makeDecoder();
+        needKeyframe = true;
+        muteVideoBtn.disabled = false;
+    }
+
+    if (!audioEncoder) {
+        audioEncoder = new AudioEncoder({
+            output: chunk => {
+                if (!micActive || socket.readyState !== WebSocket.OPEN || !their_ed25519.value) return;
+                const data = new Uint8Array(chunk.byteLength);
+                chunk.copyTo(data);
+                offset_sent++;
+                const amsgs = [{AudioFrame:{ sampleRate:48000, channels:1, format:'opus',
+                                             data: u8toB64(data), offset: offset_sent }}];
+                if (diagEnabled && ++audioFramesSent % 5 === 0) {
+                    const seq = ++audioPingSeq;
+                    pendingAudioPings.set(seq, Date.now());
+                    amsgs.push({AudioPing:{seq, t: Date.now()}});
+                }
+                socket.send(JSON.stringify([{Forward:{
+                    to_ed25519: their_ed25519.value,
+                    messages: amsgs
+                }}]));
+            },
+            error: e => log_always('audio encoder err:', e.message || e)
+        });
+        audioEncoder.configure({ codec:'opus', sampleRate:48000, numberOfChannels:1, bitrate:32000 });
+        log_always('audio: Opus 32kbps');
+    }
+
+    if (!recordProc) {
+        micSrc = audioCtx.createMediaStreamSource(camStream);
+        recordProc = audioCtx.createScriptProcessor(SP_FRAMES, 1, 1);
+        recordProc.onaudioprocess = e => {
+            const input = e.inputBuffer.getChannelData(0);
+            let rms = 0;
+            for (let i = 0; i < input.length; i++) rms += input[i] * input[i];
+            setVU(Math.min(1, Math.sqrt(rms / input.length) * 6));
+
+            if (!micActive || socket.readyState !== WebSocket.OPEN || !their_ed25519.value) return;
+            audioTsCounter += input.length;
+            const ad = new AudioData({
+                format: 'f32-planar', sampleRate: 48000,
+                numberOfFrames: input.length, numberOfChannels: 1,
+                timestamp: audioTsCounter,
+                data: new Float32Array(input)
+            });
+            audioEncoder.encode(ad);
+            ad.close();
+        };
+        micSrc.connect(recordProc);
+        recordProc.connect(audioCtx.destination);
+    }
+    return true;
+}
+
+// -- mic mute button ----------------------------------------------------------
+muteAudioBtn.onclick = async () => {
+    if (!micActive) {
+        const ok = await startCameraAndMic();
+        if (!ok) return;
+        micActive = true;
+        setLed(recLed, true);
+        muteAudioBtn.textContent = 'Mute Mic';
+    } else {
+        micActive = false;
+        setLed(recLed, false);
+        muteAudioBtn.textContent = 'Unmute Mic';
+        setVU(0);
+    }
+};
+
+// -- video mute button --------------------------------------------------------
+muteVideoBtn.onclick = async () => {
+    if (!camStream) {
+        const ok = await startCameraAndMic();
+        if (!ok) return;
+    }
+    videoMuted = !videoMuted;
+    muteVideoBtn.textContent = videoMuted ? 'Unmute Video' : 'Mute Video';
+    if (!videoMuted) frameCount = 0;
+};
+
+// -- audio processing toggles -------------------------------------------------
+async function restartAudio() {
+    if (!camStream) return;
+    const wasActive = micActive;
+    micActive = false;
+    setLed(recLed, false);
+    camStream.getAudioTracks().forEach(t => t.stop());
+    if (recordProc) { recordProc.disconnect(); recordProc = null; }
+    if (micSrc)     { micSrc.disconnect();     micSrc = null; }
+    if (audioEncoder) { try { audioEncoder.close(); } catch {} audioEncoder = null; }
+    try {
+        const s = await navigator.mediaDevices.getUserMedia({
+            audio: { channelCount:1, sampleRate:48000,
+                     echoCancellation:echoCancel, noiseSuppression:noiseSuppress, autoGainControl:autoGain }
+        });
+        camStream.getAudioTracks().forEach(t => camStream.removeTrack(t));
+        s.getAudioTracks().forEach(t => camStream.addTrack(t));
+    } catch(e) { log_always('audio restart failed:', e.message || e); return; }
+    await startCameraAndMic();
+    if (wasActive) { micActive = true; setLed(recLed, true); muteAudioBtn.textContent = 'Mute Mic'; }
+}
+
+document.getElementById('echoCancelBtn').onclick = async () => {
+    echoCancel = !echoCancel;
+    document.getElementById('echoCancelBtn').textContent = echoCancel ? 'Echo: On' : 'Echo: Off';
+    await restartAudio();
+};
+document.getElementById('noiseBtn').onclick = async () => {
+    noiseSuppress = !noiseSuppress;
+    document.getElementById('noiseBtn').textContent = noiseSuppress ? 'Noise: On' : 'Noise: Off';
+    await restartAudio();
+};
+document.getElementById('gainBtn').onclick = async () => {
+    autoGain = !autoGain;
+    document.getElementById('gainBtn').textContent = autoGain ? 'Gain: On' : 'Gain: Off';
+    await restartAudio();
+};
+
+// -- video reorder buffer helpers ---------------------------------------------
+function decodeVideoFrame(vf) {
+    if (needKeyframe && !vf.keyframe) return;
+    if (vf.w && vf.h && (vf.w !== remoteCanvas.width || vf.h !== remoteCanvas.height)) {
+        if (decoder && decoder.state !== 'closed') { try { decoder.close(); } catch {} }
+        decoder = makeDecoder(vf.w, vf.h);
+        remoteCanvas.width  = vf.w;
+        remoteCanvas.height = vf.h;
+        fitEl(remoteCanvas, vf.w, vf.h);
+        needKeyframe = true;
+        if (!vf.keyframe) return;
+    }
+    if (!decoder || decoder.state === 'closed') decoder = makeDecoder(vf.w, vf.h);
+    try {
+        decoder.decode(new EncodedVideoChunk({
+            type: vf.keyframe ? 'key' : 'delta',
+            timestamp: videoSeqRecv,
+            data: b64ToU8(vf.data)
+        }));
+    } catch(e) { log_always('video decode err:', e.message || e); needKeyframe = true; }
+}
+
+function drainVideoPending() {
+    for (;;) {
+        if (!hasFirstVideo) {
+            if (videoPending.size === 0) return;
+            videoSeqRecv = Math.min(...videoPending.keys()) - 1;
+            hasFirstVideo = true;
+        }
+        const next = videoSeqRecv + 1;
+        if (videoPending.has(next)) {
+            const { vf } = videoPending.get(next);
+            videoPending.delete(next);
+            videoSeqRecv = next;
+            decodeVideoFrame(vf);
+            continue;
+        }
+        if (videoPending.size === 0) return;
+        const reorderMs = videoDelayMs;
+        let minSeq = Infinity, oldestArrival = Infinity;
+        for (const [seq, { arrivedAt }] of videoPending) {
+            if (arrivedAt < oldestArrival) { oldestArrival = arrivedAt; minSeq = seq; }
+        }
+        if (Date.now() - oldestArrival < reorderMs) return;
+        const skipped = minSeq - next;
+        if (skipped > 0) { videoDrops += skipped; lastVideoDropMs = Date.now(); }
+        videoSeqRecv = minSeq - 1;
+        needKeyframe = true;
+    }
+}
+
+function drainAudioPending() {
+    for (;;) {
+        if (!hasFirstAudio) {
+            if (audioPending.size === 0) return;
+            offset_received = Math.min(...audioPending.keys()) - 1;
+            hasFirstAudio = true;
+        }
+        const next = offset_received + 1;
+        if (audioPending.has(next)) {
+            const { af } = audioPending.get(next);
+            audioPending.delete(next);
+            offset_received = next;
+            if (audioDecoder && audioDecoder.state === 'configured') {
+                try {
+                    audioDecoder.decode(new EncodedAudioChunk({
+                        type: 'key', timestamp: offset_received,
+                        data: b64ToU8(af.data)
+                    }));
+                } catch(e) { log_always('audio decode err:', e.message || e); }
+            }
+            continue;
+        }
+        if (audioPending.size === 0) return;
+        let minOffset = Infinity, oldestArrival = Infinity;
+        for (const [offset, { arrivedAt }] of audioPending) {
+            if (arrivedAt < oldestArrival) { oldestArrival = arrivedAt; minOffset = offset; }
+        }
+        if (Date.now() - oldestArrival < videoDelayMs) return;
+        const skipped = minOffset - next;
+        if (skipped > 0) { audioDrops += skipped; lastAudioDropMs = Date.now(); }
+        offset_received = minOffset - 1;
+    }
+}
+
+// -- WebSocket + receive ------------------------------------------------------
+let socket;
+function connect() {
+    log_always('ws connecting');
+    socket = new WebSocket(ws_url_input.value);
+    socket.onclose = () => { log_always('ws closed, reconnecting'); setTimeout(connect, 200); };
+    socket.onopen = () => {
+        let work = Promise.resolve();
+        socket.onmessage = event => {
+            work = work.then(() => {
+                let outer, messages, src, forwarded = false;
+                try { outer = JSON.parse(event.data); } catch(e) { log_always('parse err', e); return; }
+                if ('Forwarded' in outer[0]) {
+                    src = outer[0].Forwarded.from_ed25519;
+                    forwarded = true;
+                    if (their_ed25519.value && src !== their_ed25519.value) return;
+                    try { messages = JSON.parse(outer[0].Forwarded.messages); }
+                    catch(e) { log_always('inner parse err', e); return; }
+                } else {
+                    messages = outer;
+                }
+                for (const msg of messages) {
+                    log(JSON.stringify(msg));
+                    if (!forwarded && 'YourEd25519' in msg) {
+                        my_ed25519 = msg.YourEd25519.ed25519; update_links();
+                    }
+                    if (!forwarded && 'PleaseSignYourPub' in msg) {
+                        my_ed25519 = msg.PleaseSignYourPub.ed25519; update_links();
+                    }
+                    if (forwarded && 'VideoFrame' in msg) {
+                        const vf = msg.VideoFrame;
+                        if (vf.codec !== 'vp8') continue;
+                        if (vf.seq !== undefined) {
+                            if (vf.seq <= videoSeqRecv) continue;
+                            if (!videoPending.has(vf.seq))
+                                videoPending.set(vf.seq, { vf, arrivedAt: Date.now() });
+                        } else {
+                            decodeVideoFrame(vf);
+                        }
+                        drainVideoPending();
+                    }
+                    if (forwarded && 'AudioFrame' in msg) {
+                        const af = msg.AudioFrame;
+                        if (af.format === 'opus' && af.sampleRate === 48000 && af.channels === 1
+                                && af.offset > offset_received) {
+                            if (!audioPending.has(af.offset))
+                                audioPending.set(af.offset, { af, arrivedAt: Date.now() });
+                            drainAudioPending();
+                        }
+                    }
+                    if (forwarded && 'VideoPing' in msg) {
+                        if (socket.readyState === WebSocket.OPEN)
+                            socket.send(JSON.stringify([{Forward:{to_ed25519:src,
+                                messages:[{VideoPong:{seq:msg.VideoPing.seq,t:msg.VideoPing.t}}]}}]));
+                    }
+                    if (forwarded && 'VideoPong' in msg) {
+                        videoChartData[Math.floor(msg.VideoPong.t/CHART_MS_PER_COL)%CHART_W] = Date.now() - msg.VideoPong.t;
+                        pendingVideoPings.delete(msg.VideoPong.seq);
+                    }
+                    if (forwarded && 'AudioPing' in msg) {
+                        if (socket.readyState === WebSocket.OPEN)
+                            socket.send(JSON.stringify([{Forward:{to_ed25519:src,
+                                messages:[{AudioPong:{seq:msg.AudioPing.seq,t:msg.AudioPing.t,buf:videoDelayMs}}]}}]));
+                    }
+                    if (forwarded && 'AudioPong' in msg) {
+                        const rtt = Date.now() - msg.AudioPong.t;
+                        audioChartData[Math.floor(msg.AudioPong.t/CHART_MS_PER_COL)%CHART_W] = rtt;
+                        lastAudioRtt = rtt;
+                        lastRemoteBuf = msg.AudioPong.buf ?? null;
+                        pendingAudioPings.delete(msg.AudioPong.seq);
+                    }
+                    // Swarm: peer sharing their ETH/Safe address
+                    if (forwarded && 'EthAddr' in msg) {
+                        handlePeerEthAddr(msg.EthAddr);
+                    }
+                }
+            });
+        };
+        new URLSearchParams(window.location.search).forEach((v, k) => {
+            if (k === 'ed25519') { their_ed25519.value = v; update_links(); }
+        });
+    };
+}
+// -- video render loop --------------------------------------------------------
+const statsEl = document.getElementById('stats');
+(function renderLoop() {
+    const now = Date.now();
+    while (videoQueue.length && videoQueue[0].due <= now) {
+        const { bm } = videoQueue.shift();
+        if (lastVideoFrame) lastVideoFrame.close();
+        lastVideoFrame = bm;
+    }
+    const ctx2d = remoteCanvas.getContext('2d');
+    const cw = remoteCanvas.width, ch = remoteCanvas.height;
+    if (lastVideoFrame) ctx2d.drawImage(lastVideoFrame, 0, 0);
+
+    const nowCol = Math.floor(now / CHART_MS_PER_COL) % CHART_W;
+    if (nowCol !== latChartCursor) {
+        let c = latChartCursor;
+        while (c !== nowCol) {
+            c = (c + 1) % CHART_W;
+            audioChartData[c] = null;
+            videoChartData[c] = null;
+        }
+        audioChartData[(nowCol + 1) % CHART_W] = null;
+        videoChartData[(nowCol + 1) % CHART_W] = null;
+        latChartCursor = nowCol;
+    }
+
+    if (diagEnabled && cw > 0 && ch > 0) {
+        for (let c = 0; c < CHART_W; c++) {
+            const x  = Math.round(c       * cw / CHART_W);
+            const x1 = Math.round((c + 1) * cw / CHART_W);
+            const bw = Math.max(1, x1 - x);
+            if (videoChartData[c] !== null) {
+                const barH = Math.min(ch, Math.round(videoChartData[c] * ch / CHART_MAX_RTT));
+                ctx2d.fillStyle = 'rgba(30,160,255,0.55)';
+                ctx2d.fillRect(x, ch - barH, bw, barH);
+            }
+            if (audioChartData[c] !== null) {
+                const barH = Math.min(ch, Math.round(audioChartData[c] * ch / CHART_MAX_RTT));
+                ctx2d.fillStyle = 'rgba(255,160,0,0.65)';
+                ctx2d.fillRect(x, ch - barH, bw, barH);
+            }
+        }
+    }
+    requestAnimationFrame(renderLoop);
+})();
+
+const TIP_BUF = `Adaptive jitter buffer target. Grows by ~43ms on any audio underrun (even one too small to hear), then slowly decays back to ~11ms minimum over ~100s. Also delays video by the same amount to keep A/V in sync.`;
+const TIP_RING = `Current audio buffer depth -- milliseconds of decoded audio queued and waiting to play. When this hits zero the buffer underruns and buf\u00a0target increases.`;
+
+function tipHtml(label, tip) {
+    return `<span class="tip-wrap">${label}<span class="tip">${tip}</span></span>`;
+}
+
+setInterval(() => {
+    drainVideoPending();
+    drainAudioPending();
+    const now = Date.now();
+    const ago = ms => ms ? Math.round((now - ms)/1000)+'s ago' : 'never';
+    const sr = sendW && sendH ? sendW+'x'+sendH : '--';
+    const rr = remoteCanvas.width && remoteCanvas.height ? remoteCanvas.width+'x'+remoteCanvas.height : '--';
+    const ringDepth = (writeIdx - readIdx + RING_SIZE) & (RING_SIZE - 1);
+    const rttStr = lastAudioRtt !== null ? lastAudioRtt+'ms' : '--';
+    const remoteBufStr = lastRemoteBuf !== null ? lastRemoteBuf+'ms' : '--';
+    const est1way = (lastAudioRtt !== null && lastRemoteBuf !== null)
+        ? Math.round(lastAudioRtt / 2 + lastRemoteBuf)+'ms' : '--';
+    const estTotal = (lastAudioRtt !== null && lastRemoteBuf !== null)
+        ? Math.round(lastAudioRtt / 2 + lastRemoteBuf + videoDelayMs)+'ms' : '--';
+    const bpsFloor = now - BPS_WINDOW_MS;
+    while (keyframeBits.length   && keyframeBits[0].t   < bpsFloor) keyframeBits.shift();
+    while (deltaframeBits.length && deltaframeBits[0].t < bpsFloor) deltaframeBits.shift();
+    const keyBps   = Math.round(keyframeBits.reduce((s, x)   => s + x.bytes, 0) * 8 / (BPS_WINDOW_MS / 1000));
+    const deltaBps = Math.round(deltaframeBits.reduce((s, x) => s + x.bytes, 0) * 8 / (BPS_WINDOW_MS / 1000));
+    const fmtBps = n => n >= 1000 ? (n/1000).toFixed(1)+'kbps' : n+'bps';
+    statsEl.innerHTML =
+        `send: ${sr}  recv: ${rr}  ${tipHtml('buf target', TIP_BUF)}: ${videoDelayMs}ms  ${tipHtml('ring', TIP_RING)}: ${Math.round(ringDepth/AUDIO_RATE*1000)}ms\n` +
+        `net RTT: ${rttStr}  remote buf: ${remoteBufStr}  est 1-way: ${est1way}  est total: ${estTotal}\n` +
+        `video key: ${fmtBps(keyBps)}  delta: ${fmtBps(deltaBps)}  (5s avg, raw VP8)\n` +
+        `video loss: ${videoDrops}  last: ${ago(lastVideoDropMs)}\n` +
+        `audio loss: ${audioDrops}  last: ${ago(lastAudioDropMs)}`;
+}, 1000);
+
+document.addEventListener('click', e => {
+    const wrap = e.target.closest('.tip-wrap');
+    document.querySelectorAll('.tip-wrap.tip-open').forEach(el => { if (el !== wrap) el.classList.remove('tip-open'); });
+    if (wrap) { wrap.classList.toggle('tip-open'); e.stopPropagation(); }
+});
+
+connect();
+
+// ============================================================
+// SWARM RECORDING
+// ============================================================
+
+// xBZZ token on Gnosis Chain — VERIFY this address at etherscan.io/token on Gnosis Chain
+// Current as of early 2025: https://gnosisscan.io/token/0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da
+const XBZZ_GNOSIS = '0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da';
+const GNOSIS_CHAIN_ID = 100;
+
+let myEthAddr = null;          // connected wallet address
+let swarmRecorder = null;
+let swarmChunks = [];
+let swarmRecCanvas = null;
+let swarmRecRaf = null;
+let swarmRecAudioDest = null;
+let swarmRecMicSrc = null;     // separate mic source node for the recorder
+
+const beeUrlInput    = document.getElementById('beeUrl');
+const safeAddrInput  = document.getElementById('safeAddr');
+const theirEthInput  = document.getElementById('theirEth');
+const batchIdInput   = document.getElementById('batchId');
+const stampStatus    = document.getElementById('stampStatus');
+const recStatus      = document.getElementById('recStatus');
+const swarmResultEl  = document.getElementById('swarmResult');
+const startRecBtn    = document.getElementById('startRecBtn');
+const stopRecBtn     = document.getElementById('stopRecBtn');
+const recLedSwarm    = document.getElementById('recLedSwarm');
+
+// ---- Bee node health check --------------------------------------------------
+document.getElementById('checkBeeBtn').onclick = async () => {
+    const beeUrl = beeUrlInput.value.trim();
+    const beeStatus = document.getElementById('beeStatus');
+    beeStatus.textContent = 'checking…';
+    try {
+        const resp = await fetch(`${beeUrl}/health`);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        beeStatus.style.color = '#080';
+        beeStatus.textContent = `OK — Bee ${data.version || ''}`;
+    } catch(e) {
+        beeStatus.style.color = '#c00';
+        beeStatus.textContent = 'unreachable: ' + e.message;
+    }
+};
+
+// ---- Stamp check ------------------------------------------------------------
+document.getElementById('checkStampBtn').onclick = async () => {
+    const beeUrl = beeUrlInput.value.trim();
+    const id = batchIdInput.value.trim();
+    if (!id) { stampStatus.textContent = 'Enter a batch ID first'; return; }
+    try {
+        const resp = await fetch(`${beeUrl}/stamps/${id}`);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const d = await resp.json();
+        const usable = d.usable ?? d.exists;
+        const chunks = d.utilization !== undefined ? `utilization: ${d.utilization}` : '';
+        stampStatus.textContent = `Stamp: ${usable ? '✓ usable' : '✗ not usable'} depth=${d.depth} ${chunks}`;
+    } catch(e) {
+        stampStatus.textContent = 'Stamp check failed: ' + e.message;
+    }
+};
+
+// ---- Wallet connect ---------------------------------------------------------
+document.getElementById('connectWalletBtn').onclick = async () => {
+    if (!window.ethereum) {
+        alert('No EIP-1193 wallet found. Install MetaMask or a compatible browser wallet.');
+        return;
+    }
+    try {
+        const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+        myEthAddr = accounts[0];
+        document.getElementById('myEthAddrEl').textContent = ' ' + myEthAddr.slice(0,8) + '…' + myEthAddr.slice(-6);
+        // Tell the peer our ETH address so they can see it auto-filled
+        shareEthAddrWithPeer();
+    } catch(e) {
+        alert('Wallet connection failed: ' + (e.message || e));
+    }
+};
+
+function shareEthAddrWithPeer() {
+    if (!myEthAddr || !socket || socket.readyState !== WebSocket.OPEN || !their_ed25519.value) return;
+    socket.send(JSON.stringify([{Forward:{
+        to_ed25519: their_ed25519.value,
+        messages: [{EthAddr:{ addr: myEthAddr, safe: safeAddrInput.value.trim() || null }}]
+    }}]));
+}
+
+// Share again whenever the peer's ed25519 changes and we already have a wallet connected
+their_ed25519.addEventListener('change', () => { if (myEthAddr) shareEthAddrWithPeer(); });
+
+function handlePeerEthAddr(msg) {
+    theirEthInput.value = msg.addr || '';
+    document.getElementById('theirEthStatus').textContent = 'received from peer';
+    if (msg.safe && !safeAddrInput.value) safeAddrInput.value = msg.safe;
+    log_always('peer eth addr:', msg.addr, msg.safe ? '(safe: ' + msg.safe + ')' : '');
+}
+
+// ---- Buy stamp via Bee node -------------------------------------------------
+document.getElementById('buyStampBtn').onclick = async () => {
+    const beeUrl   = beeUrlInput.value.trim();
+    const amount   = document.getElementById('stampAmount').value.trim() || '10000000';
+    const depth    = document.getElementById('stampDepth').value.trim()  || '20';
+    stampStatus.textContent = 'Buying stamp — waiting for on-chain tx…';
+    try {
+        const resp = await fetch(`${beeUrl}/stamps/${amount}/${depth}`, { method: 'POST' });
+        if (!resp.ok) {
+            const txt = await resp.text();
+            throw new Error(`HTTP ${resp.status}: ${txt}`);
+        }
+        const data = await resp.json();
+        const batchId = data.batchID || data.batchId || '';
+        batchIdInput.value = batchId;
+        stampStatus.textContent = `Stamp bought! batchID: ${batchId.slice(0,16)}…`;
+    } catch(e) {
+        stampStatus.textContent = 'Stamp buy failed: ' + e.message;
+    }
+};
+
+// ---- Gnosis Safe: propose tx to send xBZZ to Bee node wallet ---------------
+// Flow:
+//   1. Fetch Bee node's ETH address from /addresses
+//   2. Encode ERC-20 transfer(beeAddr, amount) for the xBZZ contract
+//   3. Sign with MetaMask via eth_signTypedData_v4 (EIP-712 Safe tx)
+//   4. POST to Safe Transaction Service — both callers must then sign & execute
+//   5. After execution, Bee node has xBZZ and can buy stamps itself
+document.getElementById('proposeSafeBtn').onclick = async () => {
+    if (!window.ethereum || !myEthAddr) { alert('Connect wallet first'); return; }
+    const safeAddr = safeAddrInput.value.trim();
+    if (!safeAddr) { alert('Enter Gnosis Safe address'); return; }
+    if (!window.ethers) { alert('ethers.js not loaded — check network/CDN'); return; }
+    const { ethers } = window;
+
+    try {
+        stampStatus.textContent = 'Checking wallet chain…';
+        const chainIdHex = await window.ethereum.request({ method: 'eth_chainId' });
+        if (parseInt(chainIdHex, 16) !== GNOSIS_CHAIN_ID) {
+            alert('Please switch your wallet to Gnosis Chain (chain ID 100) and try again.');
+            return;
+        }
+
+        // Get the Bee node's own ETH address so we can send xBZZ to it
+        stampStatus.textContent = 'Fetching Bee node ETH address…';
+        const beeUrl = beeUrlInput.value.trim();
+        const addrResp = await fetch(`${beeUrl}/addresses`);
+        if (!addrResp.ok) throw new Error('Bee node /addresses failed — is it running?');
+        const addrData = await addrResp.json();
+        const beeEthAddr = addrData.ethereum;
+        if (!beeEthAddr) throw new Error('Bee node returned no ethereum address');
+        log_always('Bee node ETH addr:', beeEthAddr);
+
+        // Encode ERC-20 transfer(address,uint256)
+        const bzzWei = document.getElementById('bzzSendAmount').value.trim() || '20000000000000000000';
+        const transferData = ethers.utils.hexConcat([
+            '0xa9059cbb',
+            ethers.utils.defaultAbiCoder.encode(['address', 'uint256'], [beeEthAddr, bzzWei])
+        ]);
+
+        // Fetch Safe nonce from Safe Transaction Service
+        const safeApi = document.getElementById('safeApiUrl').value.trim();
+        stampStatus.textContent = 'Fetching Safe nonce…';
+        const safeInfoResp = await fetch(`${safeApi}/safes/${safeAddr}/`);
+        if (!safeInfoResp.ok) throw new Error(`Safe API error ${safeInfoResp.status}`);
+        const safeInfo = await safeInfoResp.json();
+        const nonce = safeInfo.nonce;
+
+        const safeTxMsg = {
+            to:              ethers.utils.getAddress(XBZZ_GNOSIS),
+            value:           '0',
+            data:            transferData,
+            operation:       0,  // CALL
+            safeTxGas:       '0',
+            baseGas:         '0',
+            gasPrice:        '0',
+            gasToken:        '0x0000000000000000000000000000000000000000',
+            refundReceiver:  '0x0000000000000000000000000000000000000000',
+            nonce:           String(nonce),
+        };
+
+        // EIP-712 typed data for MetaMask
+        const typedData = {
+            types: {
+                EIP712Domain: [
+                    { name: 'chainId',          type: 'uint256' },
+                    { name: 'verifyingContract', type: 'address' }
+                ],
+                SafeTx: [
+                    { name: 'to',             type: 'address' },
+                    { name: 'value',          type: 'uint256' },
+                    { name: 'data',           type: 'bytes'   },
+                    { name: 'operation',      type: 'uint8'   },
+                    { name: 'safeTxGas',      type: 'uint256' },
+                    { name: 'baseGas',        type: 'uint256' },
+                    { name: 'gasPrice',       type: 'uint256' },
+                    { name: 'gasToken',       type: 'address' },
+                    { name: 'refundReceiver', type: 'address' },
+                    { name: 'nonce',          type: 'uint256' }
+                ]
+            },
+            domain: {
+                chainId:          GNOSIS_CHAIN_ID,
+                verifyingContract: safeAddr
+            },
+            primaryType: 'SafeTx',
+            message: safeTxMsg
+        };
+
+        stampStatus.textContent = 'Waiting for wallet signature…';
+        const signature = await window.ethereum.request({
+            method: 'eth_signTypedData_v4',
+            params: [myEthAddr, JSON.stringify(typedData)]
+        });
+
+        // Compute contractTransactionHash (needed by Safe Tx Service for verification)
+        const SAFE_TX_TYPEHASH = ethers.utils.keccak256(ethers.utils.toUtf8Bytes(
+            'SafeTx(address to,uint256 value,bytes data,uint8 operation,uint256 safeTxGas,uint256 baseGas,uint256 gasPrice,address gasToken,address refundReceiver,uint256 nonce)'
+        ));
+        const DOMAIN_TYPEHASH = ethers.utils.keccak256(ethers.utils.toUtf8Bytes(
+            'EIP712Domain(uint256 chainId,address verifyingContract)'
+        ));
+        const domainSep = ethers.utils.keccak256(
+            ethers.utils.defaultAbiCoder.encode(
+                ['bytes32', 'uint256', 'address'],
+                [DOMAIN_TYPEHASH, GNOSIS_CHAIN_ID, safeAddr]
+            )
+        );
+        const encodedTx = ethers.utils.defaultAbiCoder.encode(
+            ['bytes32','address','uint256','bytes32','uint8','uint256','uint256','uint256','address','address','uint256'],
+            [
+                SAFE_TX_TYPEHASH,
+                safeTxMsg.to,
+                safeTxMsg.value,
+                ethers.utils.keccak256(safeTxMsg.data),
+                safeTxMsg.operation,
+                safeTxMsg.safeTxGas,
+                safeTxMsg.baseGas,
+                safeTxMsg.gasPrice,
+                safeTxMsg.gasToken,
+                safeTxMsg.refundReceiver,
+                safeTxMsg.nonce,
+            ]
+        );
+        const contractTransactionHash = ethers.utils.keccak256(
+            ethers.utils.concat(['0x1901', domainSep, ethers.utils.keccak256(encodedTx)])
+        );
+
+        stampStatus.textContent = 'Submitting to Safe Transaction Service…';
+        const postBody = {
+            ...safeTxMsg,
+            contractTransactionHash,
+            sender:    myEthAddr,
+            signature,
+            origin:    'CJP2P Swarm Recording',
+        };
+        const postResp = await fetch(`${safeApi}/safes/${safeAddr}/multisig-transactions/`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(postBody)
+        });
+        if (!postResp.ok) {
+            const txt = await postResp.text();
+            throw new Error(`Safe API ${postResp.status}: ${txt}`);
+        }
+        stampStatus.textContent =
+            `Safe tx proposed! Send ${(BigInt(bzzWei) / BigInt('1000000000000000000'))} xBZZ to Bee node (${beeEthAddr.slice(0,8)}…). ` +
+            `Both callers need to sign — click "Sign pending Safe tx" on the other device, then execute.`;
+    } catch(e) {
+        stampStatus.textContent = 'Safe propose failed: ' + (e.message || e);
+        log_always('Safe propose error:', e);
+    }
+};
+
+// ---- Sign a pending Safe tx -------------------------------------------------
+document.getElementById('signPendingBtn').onclick = async () => {
+    if (!window.ethereum || !myEthAddr) { alert('Connect wallet first'); return; }
+    const safeAddr = safeAddrInput.value.trim();
+    if (!safeAddr) { alert('Enter Gnosis Safe address'); return; }
+    if (!window.ethers) { alert('ethers.js not loaded'); return; }
+    const { ethers } = window;
+    const safeApi = document.getElementById('safeApiUrl').value.trim();
+
+    try {
+        stampStatus.textContent = 'Fetching pending Safe transactions…';
+        const resp = await fetch(`${safeApi}/safes/${safeAddr}/multisig-transactions/?executed=false&limit=5`);
+        if (!resp.ok) throw new Error('Safe API ' + resp.status);
+        const data = await resp.json();
+        const pending = data.results || [];
+        if (pending.length === 0) {
+            stampStatus.textContent = 'No pending transactions found for this Safe.';
+            return;
+        }
+        // Take the latest pending tx (most recent nonce)
+        const tx = pending.sort((a, b) => b.nonce - a.nonce)[0];
+        stampStatus.textContent = `Signing tx nonce=${tx.nonce} to=${tx.to.slice(0,10)}…`;
+
+        const SAFE_TX_TYPEHASH = ethers.utils.keccak256(ethers.utils.toUtf8Bytes(
+            'SafeTx(address to,uint256 value,bytes data,uint8 operation,uint256 safeTxGas,uint256 baseGas,uint256 gasPrice,address gasToken,address refundReceiver,uint256 nonce)'
+        ));
+        const DOMAIN_TYPEHASH = ethers.utils.keccak256(ethers.utils.toUtf8Bytes(
+            'EIP712Domain(uint256 chainId,address verifyingContract)'
+        ));
+
+        const typedData = {
+            types: {
+                EIP712Domain: [
+                    { name: 'chainId',          type: 'uint256' },
+                    { name: 'verifyingContract', type: 'address' }
+                ],
+                SafeTx: [
+                    { name: 'to',             type: 'address' },
+                    { name: 'value',          type: 'uint256' },
+                    { name: 'data',           type: 'bytes'   },
+                    { name: 'operation',      type: 'uint8'   },
+                    { name: 'safeTxGas',      type: 'uint256' },
+                    { name: 'baseGas',        type: 'uint256' },
+                    { name: 'gasPrice',       type: 'uint256' },
+                    { name: 'gasToken',       type: 'address' },
+                    { name: 'refundReceiver', type: 'address' },
+                    { name: 'nonce',          type: 'uint256' }
+                ]
+            },
+            domain: { chainId: GNOSIS_CHAIN_ID, verifyingContract: safeAddr },
+            primaryType: 'SafeTx',
+            message: {
+                to:             tx.to,
+                value:          tx.value || '0',
+                data:           tx.data  || '0x',
+                operation:      tx.operation,
+                safeTxGas:      String(tx.safeTxGas),
+                baseGas:        String(tx.baseGas),
+                gasPrice:       String(tx.gasPrice),
+                gasToken:       tx.gasToken,
+                refundReceiver: tx.refundReceiver,
+                nonce:          String(tx.nonce),
+            }
+        };
+
+        const signature = await window.ethereum.request({
+            method: 'eth_signTypedData_v4',
+            params: [myEthAddr, JSON.stringify(typedData)]
+        });
+
+        const confResp = await fetch(`${safeApi}/multisig-transactions/${tx.safeTxHash}/confirmations/`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ signature })
+        });
+        if (!confResp.ok) {
+            const txt = await confResp.text();
+            throw new Error(`Confirmation API ${confResp.status}: ${txt}`);
+        }
+        const conf = await confResp.json();
+        const needed = tx.confirmationsRequired || 2;
+        const have   = (tx.confirmations || []).length + 1;
+        stampStatus.textContent =
+            `Signed! ${have}/${needed} confirmations. ` +
+            (have >= needed
+                ? 'Threshold met — execute via Safe web app or wallet to send xBZZ to Bee node.'
+                : `Waiting for ${needed - have} more signature(s).`);
+    } catch(e) {
+        stampStatus.textContent = 'Sign failed: ' + (e.message || e);
+        log_always('Safe sign error:', e);
+    }
+};
+
+// ---- Recording: combined local+remote canvas with mixed audio ---------------
+
+function buildRecordingStream() {
+    // Off-screen canvas: local video (left) and remote canvas (right), side by side
+    swarmRecCanvas = document.createElement('canvas');
+    swarmRecCanvas.width  = 640;
+    swarmRecCanvas.height = 240;
+    const ctx = swarmRecCanvas.getContext('2d');
+
+    function drawFrame() {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, 640, 240);
+        if (localVideo.readyState >= 2)
+            ctx.drawImage(localVideo, 0, 0, 320, 240);
+        if (remoteCanvas.width > 0 && remoteCanvas.height > 0)
+            ctx.drawImage(remoteCanvas, 320, 0, 320, 240);
+        swarmRecRaf = requestAnimationFrame(drawFrame);
+    }
+    drawFrame();
+
+    const tracks = [...swarmRecCanvas.captureStream(30).getVideoTracks()];
+
+    // Audio: mic input + remote playback routed to a MediaStreamDestinationNode
+    if (audioCtx) {
+        swarmRecAudioDest = audioCtx.createMediaStreamDestination();
+        // Tap mic (create a new source node — original micSrc goes to recordProc for encoding)
+        if (camStream && camStream.getAudioTracks().length > 0) {
+            swarmRecMicSrc = audioCtx.createMediaStreamSource(camStream);
+            swarmRecMicSrc.connect(swarmRecAudioDest);
+        }
+        // Tap remote playback (playProc outputs the ring buffer audio)
+        if (playProc) playProc.connect(swarmRecAudioDest);
+        tracks.push(...swarmRecAudioDest.stream.getAudioTracks());
+    }
+
+    return new MediaStream(tracks);
+}
+
+startRecBtn.onclick = async () => {
+    if (!camStream) {
+        alert('Start camera/mic first (click "Unmute Mic")');
+        return;
+    }
+    await ensureAudioCtx();
+
+    const stream   = buildRecordingStream();
+    swarmChunks    = [];
+
+    const mimeType = [
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp8,opus',
+        'video/webm'
+    ].find(t => MediaRecorder.isTypeSupported(t)) || '';
+
+    swarmRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
+    swarmRecorder.ondataavailable = e => { if (e.data.size > 0) swarmChunks.push(e.data); };
+    swarmRecorder.start(2000); // flush a chunk every 2s so we can show progress
+
+    startRecBtn.disabled = true;
+    stopRecBtn.disabled  = false;
+    setLed(recLedSwarm, true);
+    recStatus.textContent = 'Recording…';
+};
+
+stopRecBtn.onclick = () => {
+    if (!swarmRecorder) return;
+    swarmRecorder.stop();
+    if (swarmRecRaf) { cancelAnimationFrame(swarmRecRaf); swarmRecRaf = null; }
+    // Disconnect recorder taps to avoid lingering connections
+    if (swarmRecMicSrc) { try { swarmRecMicSrc.disconnect(); } catch {} swarmRecMicSrc = null; }
+    if (playProc && swarmRecAudioDest) { try { playProc.disconnect(swarmRecAudioDest); } catch {} }
+    swarmRecAudioDest = null;
+
+    startRecBtn.disabled = false;
+    stopRecBtn.disabled  = true;
+    setLed(recLedSwarm, false);
+    const sizeMB = swarmChunks.reduce((s, c) => s + c.size, 0) / 1048576;
+    recStatus.textContent = `Stopped — ${sizeMB.toFixed(1)} MB recorded. Enter batch ID and click Upload.`;
+};
+
+// ---- Upload to Swarm --------------------------------------------------------
+document.getElementById('uploadSwarmBtn').onclick = async () => {
+    if (swarmChunks.length === 0) { alert('Nothing recorded yet'); return; }
+    const batchId = batchIdInput.value.trim();
+    if (!batchId) { alert('Enter a postage batch ID (buy one above first)'); return; }
+
+    const blob     = new Blob(swarmChunks, { type: 'video/webm' });
+    const beeUrl   = beeUrlInput.value.trim();
+    const sizeMB   = (blob.size / 1048576).toFixed(1);
+    const filename = `call-${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.webm`;
+
+    recStatus.textContent = `Uploading ${sizeMB} MB to Swarm…`;
+    swarmResultEl.style.display = 'none';
+
+    // Recommend a depth if the stamp is too small for the file
+    const minDepth = Math.max(17, Math.ceil(Math.log2(blob.size / 4096)));
+    log_always(`upload: ${sizeMB}MB, min depth for this file: ${minDepth}`);
+
+    try {
+        const resp = await fetch(`${beeUrl}/bzz`, {
+            method: 'POST',
+            headers: {
+                'Content-Type':          blob.type,
+                'Swarm-Postage-Batch-Id': batchId,
+                // Name metadata so gateways can serve the file with the right name
+                'Swarm-Index-Document':  filename,
+            },
+            body: blob
+        });
+        if (!resp.ok) {
+            const txt = await resp.text();
+            throw new Error(`Bee node ${resp.status}: ${txt}`);
+        }
+        const json = await resp.json();
+        const ref  = json.reference;
+        swarmResultEl.innerHTML =
+            `<b>Uploaded to Swarm!</b><br>` +
+            `Reference: <code>${ref}</code><br>` +
+            `<a href="${beeUrl}/bzz/${ref}/" target="_blank">Open via local Bee node</a>&nbsp;&nbsp;` +
+            `<a href="https://gateway.ethswarm.org/bzz/${ref}/" target="_blank">Open via Ethswarm public gateway</a><br>` +
+            `<small style="color:#777">Share the reference with anyone who has a Bee node or access to a Swarm gateway.</small>`;
+        swarmResultEl.style.display = '';
+        recStatus.textContent = `Upload complete! (${sizeMB} MB)`;
+    } catch(e) {
+        recStatus.textContent = 'Upload failed: ' + e.message;
+        log_always('Swarm upload error:', e);
+    }
+};
+</script>
+</body></html>

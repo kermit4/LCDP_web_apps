@@ -1,0 +1,1594 @@
+<!DOCTYPE html>
+<html><head><title>CJP2P video chat + Swarm (weeb-3)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+#videos { display:flex; gap:8px; flex-wrap:wrap; }
+@media(orientation:portrait) { #videos { flex-direction:column; } }
+video, canvas { display:block; background:#000; }
+.vid-wrap { display:inline-block; position:relative; vertical-align:top; }
+.vid-label { font-size:11px; color:#888; }
+.fs-btn { position:absolute; top:18px; right:2px; opacity:0.75;
+          padding:1px 5px; font-size:15px; line-height:1; cursor:pointer; }
+.fs-btn:hover { opacity:1; }
+#controls { display:flex; align-items:center; gap:8px; margin:6px 0; }
+.led { width:12px; height:12px; border-radius:50%; border:1px solid #888;
+       background:#600; display:inline-block; flex-shrink:0; }
+.led.on { background:#e00; box-shadow:0 0 5px #e00; }
+.rx-led { background:#040; }
+.rx-led.on { background:#0d0; box-shadow:0 0 5px #0d0; }
+#vuMeter { display:inline-flex; gap:2px; align-items:center; width:90px; flex-shrink:0; }
+.vu-seg { width:5px; height:14px; background:#ddd; border-radius:1px; flex-shrink:0; }
+#logDiv { font-family:monospace; font-size:11px; white-space:pre-wrap;
+          word-break:break-all; max-height:30vh; overflow:auto; border:1px solid #ccc; padding:4px; }
+.tip-wrap { position:relative; cursor:help; border-bottom:1px dotted #888; display:inline; }
+.tip { display:none; position:absolute; z-index:20; background:#222; color:#eee;
+       font-family:sans-serif; font-size:11px; font-weight:normal; line-height:1.5;
+       padding:6px 9px; border-radius:5px; width:230px; bottom:calc(100% + 4px); left:0;
+       white-space:normal; box-shadow:0 2px 8px rgba(0,0,0,.5); pointer-events:none; }
+.tip-wrap:hover .tip, .tip-wrap.tip-open .tip { display:block; }
+
+/* Swarm / weeb-3 section */
+#swarmSection { border-top:2px solid #555; margin-top:12px; padding-top:8px; font-size:13px; }
+#swarmSection table { border-collapse:collapse; }
+#swarmSection table td { padding:2px 6px 2px 0; vertical-align:middle; }
+#swarmSection textarea { font-family:monospace; font-size:11px; }
+.sw-label { font-size:11px; color:#666; }
+#swarmResult { font-size:11px; word-break:break-all; margin-top:6px; background:#f0f8f0;
+               border:1px solid #8c8; padding:6px; display:none; border-radius:4px; }
+#swarmResult code { font-size:10px; }
+#weeb3Logs { font-family:monospace; font-size:10px; color:#555; max-height:80px;
+             overflow:auto; border:1px solid #ddd; padding:3px; margin-top:3px; }
+</style>
+
+<!--
+  weeb-3 WASM is loaded dynamically at runtime from the path configured below.
+  Build it with:  RUSTFLAGS='--cfg getrandom_backend="wasm_js"' wasm-pack build --target web --out-dir static --out-name weeb_3
+  Then serve the static/ directory alongside this file (or from your CJP2P server).
+
+  WalletConnect SDK — same version used by weeb-3's own index.html.
+-->
+<script src="https://cdn.jsdelivr.net/npm/@walletconnect/ethereum-provider@2.23.3/dist/index.umd.js"></script>
+<!-- ethers v5 for EIP-712 Gnosis Safe tx hashing -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/5.7.2/ethers.umd.min.js" crossorigin="anonymous"></script>
+
+<!-- WalletConnect / MetaMask helper (from weeb-3 index.html) -->
+<script>
+(() => {
+    const SEPOLIA = 11155111;
+    const RELAYS = ["wss://relay.walletconnect.com", "wss://relay.walletconnect.org"];
+
+    function getState() {
+        if (!window.__weeb3_wc_state) window.__weeb3_wc_state = {
+            provider: null, relayIdx: 0, connectInFlight: false,
+            openedWalletThisAttempt: false, wcUri: null, lastAccounts: [], lastChainId: null
+        };
+        return window.__weeb3_wc_state;
+    }
+
+    function normalizeChainId(chainId) {
+        if (typeof chainId === 'number') return ('0x' + chainId.toString(16)).toLowerCase();
+        const s = String(chainId ?? '').trim().toLowerCase();
+        if (s.startsWith('0x')) return s;
+        if (/^\d+$/.test(s)) return ('0x' + Number(s).toString(16)).toLowerCase();
+        return s;
+    }
+
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+    function isRelayishError(e) {
+        const m = String((e && (e.message ?? e)) ?? '');
+        return m.includes('relay') || m.includes('socket') || m.includes('ERR_NAME_NOT_RESOLVED')
+            || m.includes("Couldn't establish socket") || m.includes('Failed to fetch');
+    }
+
+    function openMetaMaskForUri(uri) {
+        const enc = encodeURIComponent(uri);
+        location.href = `metamask://wc?uri=${enc}`;
+        setTimeout(() => { location.href = `https://metamask.app.link/wc?uri=${enc}`; }, 700);
+    }
+
+    async function teardown() {
+        const s = getState();
+        try { await s.provider?.disconnect?.(); } catch (_) {}
+        Object.assign(s, { provider: null, wcUri: null, connectInFlight: false,
+            openedWalletThisAttempt: false, lastAccounts: [], lastChainId: null });
+    }
+
+    async function ensureProvider(projectId) {
+        const s = getState();
+        if (s.provider) return s.provider;
+        const WC = window['@walletconnect/ethereum-provider'];
+        if (!WC?.EthereumProvider) throw new Error('WalletConnect EthereumProvider not loaded');
+        const provider = await WC.EthereumProvider.init({
+            projectId,
+            relayUrl: RELAYS[s.relayIdx],
+            chains: [SEPOLIA], optionalChains: [SEPOLIA],
+            showQrModal: false,
+            metadata: { name: 'CJP2P+Swarm', description: 'Video call recorder', url: location.origin, icons: [] },
+            rpcMap: { [SEPOLIA]: 'https://rpc.sepolia.org' }
+        });
+        provider.on('display_uri', uri => {
+            s.wcUri = uri;
+            if (!s.connectInFlight || s.openedWalletThisAttempt) return;
+            s.openedWalletThisAttempt = true;
+            openMetaMaskForUri(uri);
+        });
+        provider.on('disconnect', () => Object.assign(s, { wcUri: null, connectInFlight: false,
+            openedWalletThisAttempt: false, lastAccounts: [], lastChainId: null }));
+        provider.on('accountsChanged', accs => { s.lastAccounts = Array.isArray(accs) ? accs : []; });
+        provider.on('chainChanged', cid => { s.lastChainId = normalizeChainId(cid); });
+        s.provider = provider;
+        return provider;
+    }
+
+    async function connectWithFallback(projectId) {
+        const s = getState();
+        let provider = await ensureProvider(projectId);
+        if (provider.session) return provider;
+        s.connectInFlight = true; s.openedWalletThisAttempt = false;
+        try {
+            await provider.connect(); return provider;
+        } catch(e) {
+            if (!isRelayishError(e)) throw e;
+            await teardown();
+            s.relayIdx = (s.relayIdx + 1) % RELAYS.length;
+            provider = await ensureProvider(projectId);
+            s.connectInFlight = true; s.openedWalletThisAttempt = false;
+            await provider.connect(); return provider;
+        } finally { s.connectInFlight = false; }
+    }
+
+    window.weeb3EnsureEip1193 = async function(projectId) {
+        try {
+            const s = getState();
+            if (window.ethereum?.request && !s.provider) {
+                const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+                const chainId = normalizeChainId(await window.ethereum.request({ method: 'eth_chainId' }));
+                return { ok: true, accounts, chainId, via: 'injected' };
+            }
+            const provider = await connectWithFallback(projectId);
+            window.ethereum = provider;
+            let accounts = s.lastAccounts;
+            if (!accounts.length) {
+                try { accounts = await provider.request({ method: 'eth_accounts' }); } catch (_) {}
+            }
+            if (!accounts.length) {
+                try { accounts = await provider.request({ method: 'eth_requestAccounts' }); } catch (_) {}
+            }
+            if (!accounts.length) throw new Error('Connected but no account available');
+            s.lastAccounts = accounts;
+            const chainId = normalizeChainId(await provider.request({ method: 'eth_chainId' }));
+            return { ok: true, accounts, chainId, via: 'walletconnect' };
+        } catch(e) {
+            return { ok: false, error: String(e?.message || e) };
+        }
+    };
+})();
+</script>
+</head>
+<body>
+their ed25519: <input id=their_ed25519 size=80>
+<br>share: <a id=link href=""></a>
+<br>ws url: <input id=ws_url size=50>
+<br><a href=/>status page</a>
+<p>
+<div id=videos>
+  <div class=vid-wrap>
+    <div class=vid-label>Local</div>
+    <video id=localVideo autoplay muted playsinline></video>
+    <button class=fs-btn id=fsLocal>&#x26F6;</button>
+  </div>
+  <div class=vid-wrap>
+    <div class=vid-label>Remote</div>
+    <canvas id=remoteCanvas width=320 height=240></canvas>
+    <button class=fs-btn id=fsRemote>&#x26F6;</button>
+  </div>
+</div>
+<div id=controls>
+  <span class=led id=recLed title="mic recording"></span>
+  <div id=vuMeter></div>
+  <button id=muteAudioBtn>Unmute Mic</button>
+  <button id=muteVideoBtn>Unmute Video</button>
+  <span class="led rx-led" id=rxLed title="rx audio"></span>
+  <button id=echoCancelBtn>Echo: On</button>
+  <button id=noiseBtn>Noise: Off</button>
+  <button id=gainBtn>Gain: Off</button>
+  <button id=debugBtn>debug log</button>
+  <button id=diagBtn>Diag: Off</button>
+</div>
+<pre id=stats style="font-size:11px;margin:4px 0;"></pre>
+<div id=logDiv></div>
+
+<!-- ================================================================
+     SWARM RECORDING via weeb-3 (browser-side libp2p Swarm client)
+     ================================================================
+
+  How it works:
+    - weeb-3 is a WASM Swarm client that connects directly to remote Swarm nodes
+      over WebSocket/libp2p (no local Bee node needed).
+    - This page loads the weeb-3 WASM, starts a node, and uses it to upload
+      the call recording to Swarm once it finishes.
+    - Storage is paid for with SBZZ on Sepolia testnet (chain 11155111).
+      Both callers can split the cost via a shared Gnosis Safe on Sepolia.
+
+  Prerequisites:
+    1. Build weeb-3:
+         cd weeb-3
+         RUSTFLAGS='--cfg getrandom_backend="wasm_js"' \
+           wasm-pack build --target web --out-dir static --out-name weeb_3
+    2. Serve static/ at a path reachable from this page (e.g. /weeb-3/).
+    3. Get Sepolia SBZZ faucet tokens (or use the Gnosis Safe section to split cost).
+    4. Buy a postage batch: click "Buy Storage" below (or use weeb-3's own UI).
+-->
+<div id=swarmSection>
+<b>&#x1F41D; Swarm Recording</b>
+<small style="color:#888"> &mdash; records call, uploads to decentralised Swarm via weeb-3 libp2p client (no local node needed)</small>
+
+<table style="margin:5px 0">
+  <tr>
+    <td>weeb_3.js path:</td>
+    <td><input id=weeb3Path type=text value="/weeb-3/weeb_3.js" size=40></td>
+    <td>&nbsp;<button id=initWeeb3Btn>Init weeb-3</button>
+        <span id=weeb3Status style="font-size:11px;color:#888;"></span></td>
+  </tr>
+  <tr>
+    <td style="vertical-align:top;padding-top:4px">Bootstrap nodes:</td>
+    <td colspan=2>
+      <textarea id=bootstrapNodes rows=4 cols=88>
+/ip4/167.235.96.31/tcp/32535/tls/sni/167-235-96-31.k2k4r8n9x80nshvozftjmg4klymgjtdflwxiovfx63yc6917dlrteva4.libp2p.direct/ws/p2p/QmYkyg5ZU3DzxhqfGyLYLVbk9DMdBagxe9q1AmHKNgt8ps
+/ip4/49.12.172.37/tcp/32530/tls/sni/49-12-172-37.k2k4r8kibjadgpqco81quegou963p7lbcd9ti0bw8lrcc95ystm6by9d.libp2p.direct/ws/p2p/QmRHeoLCHjHoMur8PQpuV8acNJMmKPT61c3ZMLpTqY7og4
+/ip4/49.12.172.37/tcp/32533/tls/sni/49-12-172-37.k2k4r8pnvqpufzwaf4ic1o1fo0onfh4p9b37gp0rdxzdte2kcd7ewp4w.libp2p.direct/ws/p2p/QmfCwr7FVxbYz1GPQ2NN2r5iduXSQDLefqzkBAB9JfZYgF
+/ip4/167.235.96.31/tcp/32536/tls/sni/167-235-96-31.k2k4r8omeryzle2ywg941xs6vgwlq4cr0b3qe83ub7rn9n8ysmcwfqru.libp2p.direct/ws/p2p/QmcPvejw1r1BQ6aUuK6Y18mcLAcYyg9iEmiD1TRpyaox7s
+/ip4/49.12.172.37/tcp/32531/tls/sni/49-12-172-37.k2k4r8l8l5hzyp48440rjqlfdjpr03jfgioal93akbigy0tomtft4w44.libp2p.direct/ws/p2p/QmTFvqc5wMkbsXjqnTxQbVss5t8T1292BupJZ9VyU1GMRV
+/ip4/49.12.172.37/tcp/32532/tls/sni/49-12-172-37.k2k4r8pr3m3aug5nudg2y039qfj2gxw6wnlx0e0ghzxufcn38soyp9z4.libp2p.direct/ws/p2p/QmfSx1ujzboapD5h2CiqTJqUy46FeTDwXBszB3XUCfKEEj
+/ip4/167.235.96.31/tcp/32537/tls/sni/167-235-96-31.k2k4r8m6hc1wyzz789uubmz6cxmeuquzfi5b06zdh4l7e5ve199oay7j.libp2p.direct/ws/p2p/QmVoPN964YuoGpqc6BGJpLGmUn2goaqRm5vkCi5e7H9w98
+/ip4/167.235.96.31/tcp/32538/tls/sni/167-235-96-31.k2k4r8nqwaetj1eljpu4qzeebnnujzu997pdh1i1ia2dcpcjjv9gc1s0.libp2p.direct/ws/p2p/Qma2pmuYLCzcmsFHHLyWRPxxt7eN9MKqhnJaShKomn2zEK</textarea>
+    </td>
+  </tr>
+  <tr>
+    <td>Network ID:</td>
+    <td><input id=networkId type=text value="10" size=6>
+        &nbsp;<span class=sw-label>Connecting: <span id=weeb3Ongoing>0</span>
+        &nbsp;Connected: <span id=weeb3Connected>0</span></span></td>
+  </tr>
+</table>
+<div id=weeb3Logs></div>
+
+<div style="margin:6px 0; border-top:1px solid #ddd; padding-top:6px">
+<b>Storage (postage batch on Sepolia)</b>
+<span class=sw-label> — buy with SBZZ so weeb-3 can upload; both callers can split cost via their shared Gnosis Safe</span><br>
+
+<table style="margin:4px 0">
+  <tr>
+    <td>My ETH addr:</td>
+    <td><input id=myEthAddr type=text size=44 placeholder="auto-fill on wallet connect" readonly></td>
+    <td>&nbsp;<button id=connectWalletBtn>Connect Wallet (Sepolia)</button></td>
+  </tr>
+  <tr>
+    <td>Peer ETH addr:</td>
+    <td><input id=theirEthAddr type=text size=44 placeholder="auto-fill when peer connects wallet"></td>
+    <td><span id=theirEthStatus style="font-size:10px;color:#888"></span></td>
+  </tr>
+  <tr>
+    <td>Gnosis Safe (Sepolia):</td>
+    <td><input id=safeAddr type=text size=44 placeholder="0x… 2-of-2 Safe on Sepolia chain 11155111"></td>
+  </tr>
+</table>
+
+<div style="margin:4px 0">
+  Valid for (days): <input id=batchDays type=number value="365" min="1" size=6>
+  &nbsp;Size:
+  <select id=batchSize>
+    <option value="0">512 MB</option>
+    <option value="1">1 GB</option>
+    <option value="2">2 GB</option>
+    <option value="3" selected>4 GB</option>
+    <option value="4">8 GB</option>
+    <option value="5">16 GB</option>
+  </select>
+  &nbsp;<button id=buyBatchBtn>Buy Storage (my MetaMask pays)</button>
+  &nbsp;<button id=proposeSafeBtn>Propose Safe tx (split cost)</button>
+  &nbsp;<button id=signSafeBtn>Sign pending Safe tx</button>
+  <br>
+  Safe Tx Service: <input id=safeApiUrl type=text value="https://safe-transaction-sepolia.safe.global/api/v1" size=55>
+  <br>
+  SBZZ to send to my address: <input id=sbzzAmount type=text value="20000000000000000000" size=26>
+  <span class=sw-label>(wei, 18 dec — default 20 SBZZ; enough for a medium batch)</span>
+  <br>
+  <span id=batchStatus style="font-size:11px;color:#444;"></span>
+</div>
+
+<div style="margin:4px 0; border-top:1px solid #eee; padding-top:4px">
+<b>Import existing batch</b>
+<span class=sw-label> — if you already bought a batch via Bee API, direct contract call, or another tool</span><br>
+<table style="margin:4px 0">
+  <tr>
+    <td>Batch ID (hex):</td>
+    <td><input id=manualBatchId type=text size=68 placeholder="64 hex chars (32 bytes)"></td>
+  </tr>
+  <tr>
+    <td>Owner key (hex):</td>
+    <td><input id=manualOwnerKey type=text size=68 placeholder="64 hex chars — private key of address registered as batch owner"></td>
+  </tr>
+  <tr>
+    <td>Batch depth:</td>
+    <td><input id=manualBatchDepth type=number value="20" min="17" max="30" size=5>
+    <span class=sw-label>&nbsp;(depth 20 = 16 MB, 24 = 256 MB, 28 = 4 GB)</span></td>
+  </tr>
+</table>
+<button id=setBatchBtn>Write batch to IndexedDB</button>
+<button id=readBatchBtn>Read current batch from IndexedDB</button>
+<span id=importBatchStatus style="font-size:11px;color:#444;margin-left:8px;"></span>
+</div>
+</div>
+
+<div style="margin:6px 0; border-top:1px solid #ddd; padding-top:6px">
+<b>Recording</b><br>
+<span class=led id=recLedSwarm></span>
+&nbsp;<button id=startRecBtn>&#x23FA; Start Recording</button>
+<button id=stopRecBtn disabled>&#x23F9; Stop Recording</button>
+&nbsp;&nbsp;
+<button id=uploadSwarmBtn>&#x2B06; Upload to Swarm</button>
+<button id=resetStampBtn>Reset stamp (reuse storage)</button>
+<span id=recStatus style="font-size:11px;color:#555;margin-left:8px;"></span>
+</div>
+
+<div id=swarmResult></div>
+</div>
+
+<script>
+// ======== video.html core (unchanged) =========================================
+
+const their_ed25519 = document.getElementById('their_ed25519');
+const link          = document.getElementById('link');
+const localVideo    = document.getElementById('localVideo');
+const remoteCanvas  = document.getElementById('remoteCanvas');
+const recLed        = document.getElementById('recLed');
+const rxLed         = document.getElementById('rxLed');
+const muteAudioBtn  = document.getElementById('muteAudioBtn');
+const muteVideoBtn  = document.getElementById('muteVideoBtn');
+const debugBtn      = document.getElementById('debugBtn');
+const logDiv        = document.getElementById('logDiv');
+const ws_url_input  = document.getElementById('ws_url');
+ws_url_input.value  = 'ws://localhost:24255/wt';
+ws_url_input.onchange = () => { if (socket) socket.close(); };
+
+const VU_N = 12;
+const vuSegs = Array.from({length: VU_N}, () => {
+    const s = document.createElement('div');
+    s.className = 'vu-seg';
+    document.getElementById('vuMeter').appendChild(s);
+    return s;
+});
+function setVU(v) {
+    const lit = Math.round(v * VU_N);
+    vuSegs.forEach((s, i) => {
+        s.style.background = i >= lit ? '#ddd'
+            : i < VU_N * 0.6 ? '#0a0'
+            : i < VU_N * 0.85 ? '#aa0' : '#d00';
+    });
+}
+setVU(0);
+
+function setLed(el, on) { el.classList.toggle('on', on); }
+
+let logging = false;
+debugBtn.onclick = () => { logging = !logging; };
+const diagBtn = document.getElementById('diagBtn');
+diagBtn.onclick = () => {
+    diagEnabled = !diagEnabled;
+    diagBtn.textContent = diagEnabled ? 'Diag: On' : 'Diag: Off';
+};
+function log_always(...a) {
+    const d = document.createElement('div');
+    d.textContent = `[${new Date().toLocaleTimeString()}] ${a.join(' ')}`;
+    logDiv.appendChild(d);
+    while (logDiv.children.length > 500) logDiv.removeChild(logDiv.firstChild);
+    if (logging) logDiv.scrollTop = logDiv.scrollHeight;
+}
+function log(...a) { if (logging) log_always(...a); }
+window.onerror = (m, u, l, c, e) => { log_always('ERROR:', m, '@', l+':'+c); if (e?.stack) log_always(e.stack); return false; };
+window.onunhandledrejection = e => log_always('UNHANDLED:', e.reason?.stack || e.reason || e);
+
+function u8toB64(u8) {
+    let s = ''; const C = 0x8000;
+    for (let i = 0; i < u8.length; i += C) s += String.fromCharCode.apply(null, u8.subarray(i, i+C));
+    return btoa(s);
+}
+function b64ToU8(b64) {
+    const s = atob(b64), u8 = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) u8[i] = s.charCodeAt(i);
+    return u8;
+}
+
+let my_ed25519 = null;
+function update_links() {
+    if (!my_ed25519) return;
+    const url = location.origin + location.pathname + '?ed25519=' + my_ed25519;
+    link.href = url; link.textContent = url;
+}
+their_ed25519.addEventListener('input', update_links);
+their_ed25519.addEventListener('change', () => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('ed25519')) {
+        params.set('ed25519', their_ed25519.value);
+        history.replaceState(null, '', window.location.pathname + '?' + params.toString());
+    }
+});
+
+function goFullscreen(el) {
+    (el.requestFullscreen || el.webkitRequestFullscreen || (() => {})).call(el);
+}
+document.getElementById('fsLocal').onclick  = () => goFullscreen(localVideo);
+document.getElementById('fsRemote').onclick = () => goFullscreen(remoteCanvas);
+
+const MAX_DIM = 320;
+function fitEl(el, w, h) {
+    const scale = Math.min(MAX_DIM / w, MAX_DIM / h, 1);
+    el.style.width  = Math.round(w * scale) + 'px';
+    el.style.height = Math.round(h * scale) + 'px';
+}
+fitEl(localVideo, 320, 240);
+
+let camStream    = null;
+let encoder      = null;
+let decoder      = null;
+let frameReader  = null;
+let needKeyframe = true;
+let frameCount   = 0;
+let videoMuted   = true;
+let micActive    = false;
+let videoSeqSent = Date.now();
+let videoSeqRecv = 0;
+
+let echoCancel    = true;
+let noiseSuppress = false;
+let autoGain      = false;
+let micSrc        = null;
+let audioCtx      = null;
+let recordProc    = null;
+let playProc      = null;
+let audioEncoder  = null;
+let audioDecoder  = null;
+let audioTsCounter  = 0;
+let offset_sent     = Date.now();
+let offset_received = 0;
+let lastSample      = 0;
+
+let videoDrops = 0, lastVideoDropMs = null, hasFirstVideo = false;
+let audioDrops = 0, lastAudioDropMs = null, hasFirstAudio = false;
+let videoDelayMs = 0;
+const videoQueue = [];
+const videoPending = new Map();
+const audioPending = new Map();
+let sendW = 0, sendH = 0;
+let lastVideoFrame = null;
+
+const CHART_W = 320;
+const CHART_MS_PER_COL = 200;
+const CHART_MAX_RTT = 500;
+const audioChartData = new Array(CHART_W).fill(null);
+const videoChartData = new Array(CHART_W).fill(null);
+let latChartCursor = Math.floor(Date.now() / CHART_MS_PER_COL) % CHART_W;
+let diagEnabled = false;
+let audioPingSeq = 0, videoPingSeq = 0;
+const pendingAudioPings = new Map();
+const pendingVideoPings = new Map();
+let audioFramesSent = 0, videoFramesSent = 0;
+let lastAudioRtt = null, lastRemoteBuf = null;
+
+const BPS_WINDOW_MS = 5000;
+const keyframeBits   = [];
+const deltaframeBits = [];
+
+const RING_SIZE  = 32768;
+const AUDIO_RATE = 48000;
+const SP_FRAMES  = 512;
+const MIN_BUF    = SP_FRAMES;
+const MAX_BUF    = 24000;
+let   audioBufTarget = MIN_BUF;
+const ring = new Float32Array(RING_SIZE);
+let writeIdx = 0, readIdx = 0;
+let inUnderrun = false;
+
+if ('AudioDecoder' in window) {
+    audioDecoder = new AudioDecoder({
+        output: audioData => {
+            const pcm = new Float32Array(audioData.numberOfFrames);
+            audioData.copyTo(pcm, { planeIndex: 0, format: 'f32-planar' });
+            audioData.close();
+            setLed(rxLed, true);
+            const resuming = (writeIdx === readIdx);
+            const rampLen = resuming ? Math.min(SP_FRAMES, pcm.length) : 0;
+            for (let i = 0; i < pcm.length; i++) {
+                ring[writeIdx] = i < rampLen ? pcm[i] * (i / rampLen) : pcm[i];
+                writeIdx = (writeIdx + 1) & (RING_SIZE - 1);
+                if (writeIdx === readIdx) readIdx = (readIdx + SP_FRAMES) & (RING_SIZE - 1);
+            }
+            const depth = (writeIdx - readIdx + RING_SIZE) & (RING_SIZE - 1);
+            if (depth > audioBufTarget + SP_FRAMES * 2) {
+                readIdx = (writeIdx - audioBufTarget) & (RING_SIZE - 1);
+            }
+        },
+        error: e => log_always('audio decoder err:', e.message || e)
+    });
+    try { audioDecoder.configure({ codec:'opus', sampleRate:48000, numberOfChannels:1 }); }
+    catch(e) { log_always('AudioDecoder configure failed:', e.message); audioDecoder = null; }
+}
+
+function makeDecoder(w, h) {
+    const d = new VideoDecoder({
+        output: frame => {
+            if (remoteCanvas.width !== frame.displayWidth || remoteCanvas.height !== frame.displayHeight) {
+                remoteCanvas.width  = frame.displayWidth;
+                remoteCanvas.height = frame.displayHeight;
+                fitEl(remoteCanvas, frame.displayWidth, frame.displayHeight);
+            }
+            createImageBitmap(frame).then(bm => {
+                videoQueue.push({ bm, due: Date.now() + videoDelayMs });
+            });
+            frame.close();
+            needKeyframe = false;
+        },
+        error: e => { log_always('video decoder err:', e.message || e); needKeyframe = true; }
+    });
+    const cfg = { codec: 'vp8' };
+    if (w && h) { cfg.codedWidth = w; cfg.codedHeight = h; }
+    d.configure(cfg);
+    return d;
+}
+
+async function ensureAudioCtx() {
+    if (audioCtx) { await audioCtx.resume(); return; }
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+    await audioCtx.resume();
+    const hwLatency = (audioCtx.outputLatency || 0) + (audioCtx.baseLatency || 0);
+    log_always('audio hw latency:', Math.round(hwLatency*1000)+'ms');
+    playProc = audioCtx.createScriptProcessor(SP_FRAMES, 1, 1);
+    playProc.onaudioprocess = e => {
+        const out = e.outputBuffer.getChannelData(0);
+        let underrun = false;
+        for (let i = 0; i < out.length; i++) {
+            if (readIdx !== writeIdx) {
+                lastSample = ring[readIdx];
+                out[i] = lastSample;
+                readIdx = (readIdx + 1) & (RING_SIZE - 1);
+            } else {
+                lastSample *= 0.997;
+                out[i] = lastSample;
+                underrun = true;
+            }
+        }
+        if (underrun) {
+            setLed(rxLed, false);
+            if (!inUnderrun) audioBufTarget = Math.min(MAX_BUF, audioBufTarget + SP_FRAMES * 4);
+            inUnderrun = true;
+        } else {
+            inUnderrun = false;
+        }
+        audioBufTarget = Math.max(MIN_BUF, audioBufTarget - 4);
+        videoDelayMs = Math.round(audioBufTarget / AUDIO_RATE * 1000);
+    };
+    playProc.connect(audioCtx.destination);
+}
+document.addEventListener('click', () => ensureAudioCtx().catch(() => {}), { once: true });
+
+async function startCameraAndMic() {
+    await ensureAudioCtx();
+    if (!camStream) {
+        try {
+            camStream = await navigator.mediaDevices.getUserMedia({
+                video: { width:{ max:640 }, height:{ max:640 }, frameRate:{ ideal:24, max:30 } },
+                audio: { channelCount:1, sampleRate:48000,
+                         echoCancellation:echoCancel, noiseSuppression:noiseSuppress, autoGainControl:autoGain }
+            });
+        } catch(e) { log_always('getUserMedia failed:', e.message || e); return false; }
+
+        localVideo.srcObject = camStream;
+        const vt = camStream.getVideoTracks()[0];
+        const s  = vt.getSettings();
+        let encW = s.width  || 320;
+        let encH = s.height || 240;
+        const FPS = s.frameRate || 24;
+        const KEYFRAME_EVERY = Math.max(1, Math.round(FPS / 2));
+        fitEl(localVideo, encW, encH);
+
+        function configureEncoder(w, h) {
+            encoder.configure({ codec:'vp8', width:w, height:h, bitrate:200_000, framerate:FPS });
+            encW = w; encH = h; sendW = w; sendH = h; frameCount = 0;
+        }
+
+        if ('VideoEncoder' in window) {
+            encoder = new VideoEncoder({
+                output: chunk => {
+                    if (videoMuted || socket.readyState !== WebSocket.OPEN || !their_ed25519.value) return;
+                    const data = new Uint8Array(chunk.byteLength);
+                    chunk.copyTo(data);
+                    (chunk.type === 'key' ? keyframeBits : deltaframeBits).push({ t: Date.now(), bytes: chunk.byteLength });
+                    videoSeqSent++;
+                    const vmsgs = [{VideoFrame:{ codec:'vp8', keyframe: chunk.type==='key',
+                                                 seq: videoSeqSent, w: encW, h: encH,
+                                                 data: u8toB64(data) }}];
+                    if (diagEnabled && ++videoFramesSent % 5 === 0) {
+                        const seq = ++videoPingSeq;
+                        pendingVideoPings.set(seq, Date.now());
+                        vmsgs.push({VideoPing:{seq, t: Date.now()}});
+                    }
+                    socket.send(JSON.stringify([{Forward:{
+                        to_ed25519: their_ed25519.value, messages: vmsgs
+                    }}]));
+                },
+                error: e => log_always('video encoder err:', e.message || e)
+            });
+            try { configureEncoder(encW, encH); }
+            catch(e) { log_always('VideoEncoder configure failed:', e.message || e); encoder = null; }
+        }
+
+        if (encoder) {
+            const proc = new MediaStreamTrackProcessor({ track: vt });
+            frameReader = proc.readable.getReader();
+            (async () => {
+                while (true) {
+                    let r;
+                    try { r = await frameReader.read(); } catch { break; }
+                    if (r.done) break;
+                    const frame = r.value;
+                    if (videoMuted) { frame.close(); continue; }
+                    if (frame.codedWidth !== encW || frame.codedHeight !== encH) {
+                        try { await encoder.flush(); } catch {}
+                        configureEncoder(frame.codedWidth, frame.codedHeight);
+                        fitEl(localVideo, frame.codedWidth, frame.codedHeight);
+                    }
+                    if (encoder.encodeQueueSize > 2) { frame.close(); continue; }
+                    try { encoder.encode(frame, { keyFrame: (frameCount % KEYFRAME_EVERY === 0) }); }
+                    catch(e) { log_always('encode err:', e); }
+                    frame.close();
+                    frameCount++;
+                }
+            })();
+        }
+
+        decoder = makeDecoder();
+        needKeyframe = true;
+        muteVideoBtn.disabled = false;
+    }
+
+    if (!audioEncoder) {
+        audioEncoder = new AudioEncoder({
+            output: chunk => {
+                if (!micActive || socket.readyState !== WebSocket.OPEN || !their_ed25519.value) return;
+                const data = new Uint8Array(chunk.byteLength);
+                chunk.copyTo(data);
+                offset_sent++;
+                const amsgs = [{AudioFrame:{ sampleRate:48000, channels:1, format:'opus',
+                                             data: u8toB64(data), offset: offset_sent }}];
+                if (diagEnabled && ++audioFramesSent % 5 === 0) {
+                    const seq = ++audioPingSeq;
+                    pendingAudioPings.set(seq, Date.now());
+                    amsgs.push({AudioPing:{seq, t: Date.now()}});
+                }
+                socket.send(JSON.stringify([{Forward:{
+                    to_ed25519: their_ed25519.value, messages: amsgs
+                }}]));
+            },
+            error: e => log_always('audio encoder err:', e.message || e)
+        });
+        audioEncoder.configure({ codec:'opus', sampleRate:48000, numberOfChannels:1, bitrate:32000 });
+    }
+
+    if (!recordProc) {
+        micSrc = audioCtx.createMediaStreamSource(camStream);
+        recordProc = audioCtx.createScriptProcessor(SP_FRAMES, 1, 1);
+        recordProc.onaudioprocess = e => {
+            const input = e.inputBuffer.getChannelData(0);
+            let rms = 0;
+            for (let i = 0; i < input.length; i++) rms += input[i] * input[i];
+            setVU(Math.min(1, Math.sqrt(rms / input.length) * 6));
+            if (!micActive || socket.readyState !== WebSocket.OPEN || !their_ed25519.value) return;
+            audioTsCounter += input.length;
+            const ad = new AudioData({
+                format: 'f32-planar', sampleRate: 48000,
+                numberOfFrames: input.length, numberOfChannels: 1,
+                timestamp: audioTsCounter,
+                data: new Float32Array(input)
+            });
+            audioEncoder.encode(ad);
+            ad.close();
+        };
+        micSrc.connect(recordProc);
+        recordProc.connect(audioCtx.destination);
+    }
+    return true;
+}
+
+muteAudioBtn.onclick = async () => {
+    if (!micActive) {
+        const ok = await startCameraAndMic();
+        if (!ok) return;
+        micActive = true;
+        setLed(recLed, true);
+        muteAudioBtn.textContent = 'Mute Mic';
+    } else {
+        micActive = false;
+        setLed(recLed, false);
+        muteAudioBtn.textContent = 'Unmute Mic';
+        setVU(0);
+    }
+};
+
+muteVideoBtn.onclick = async () => {
+    if (!camStream) {
+        const ok = await startCameraAndMic();
+        if (!ok) return;
+    }
+    videoMuted = !videoMuted;
+    muteVideoBtn.textContent = videoMuted ? 'Unmute Video' : 'Mute Video';
+    if (!videoMuted) frameCount = 0;
+};
+
+async function restartAudio() {
+    if (!camStream) return;
+    const wasActive = micActive;
+    micActive = false;
+    setLed(recLed, false);
+    camStream.getAudioTracks().forEach(t => t.stop());
+    if (recordProc) { recordProc.disconnect(); recordProc = null; }
+    if (micSrc)     { micSrc.disconnect();     micSrc = null; }
+    if (audioEncoder) { try { audioEncoder.close(); } catch {} audioEncoder = null; }
+    try {
+        const s = await navigator.mediaDevices.getUserMedia({
+            audio: { channelCount:1, sampleRate:48000,
+                     echoCancellation:echoCancel, noiseSuppression:noiseSuppress, autoGainControl:autoGain }
+        });
+        camStream.getAudioTracks().forEach(t => camStream.removeTrack(t));
+        s.getAudioTracks().forEach(t => camStream.addTrack(t));
+    } catch(e) { log_always('audio restart failed:', e.message || e); return; }
+    await startCameraAndMic();
+    if (wasActive) { micActive = true; setLed(recLed, true); muteAudioBtn.textContent = 'Mute Mic'; }
+}
+
+document.getElementById('echoCancelBtn').onclick = async () => {
+    echoCancel = !echoCancel;
+    document.getElementById('echoCancelBtn').textContent = echoCancel ? 'Echo: On' : 'Echo: Off';
+    await restartAudio();
+};
+document.getElementById('noiseBtn').onclick = async () => {
+    noiseSuppress = !noiseSuppress;
+    document.getElementById('noiseBtn').textContent = noiseSuppress ? 'Noise: On' : 'Noise: Off';
+    await restartAudio();
+};
+document.getElementById('gainBtn').onclick = async () => {
+    autoGain = !autoGain;
+    document.getElementById('gainBtn').textContent = autoGain ? 'Gain: On' : 'Gain: Off';
+    await restartAudio();
+};
+
+function decodeVideoFrame(vf) {
+    if (needKeyframe && !vf.keyframe) return;
+    if (vf.w && vf.h && (vf.w !== remoteCanvas.width || vf.h !== remoteCanvas.height)) {
+        if (decoder && decoder.state !== 'closed') { try { decoder.close(); } catch {} }
+        decoder = makeDecoder(vf.w, vf.h);
+        remoteCanvas.width  = vf.w;
+        remoteCanvas.height = vf.h;
+        fitEl(remoteCanvas, vf.w, vf.h);
+        needKeyframe = true;
+        if (!vf.keyframe) return;
+    }
+    if (!decoder || decoder.state === 'closed') decoder = makeDecoder(vf.w, vf.h);
+    try {
+        decoder.decode(new EncodedVideoChunk({
+            type: vf.keyframe ? 'key' : 'delta',
+            timestamp: videoSeqRecv,
+            data: b64ToU8(vf.data)
+        }));
+    } catch(e) { log_always('video decode err:', e.message || e); needKeyframe = true; }
+}
+
+function drainVideoPending() {
+    for (;;) {
+        if (!hasFirstVideo) {
+            if (videoPending.size === 0) return;
+            videoSeqRecv = Math.min(...videoPending.keys()) - 1;
+            hasFirstVideo = true;
+        }
+        const next = videoSeqRecv + 1;
+        if (videoPending.has(next)) {
+            const { vf } = videoPending.get(next);
+            videoPending.delete(next);
+            videoSeqRecv = next;
+            decodeVideoFrame(vf);
+            continue;
+        }
+        if (videoPending.size === 0) return;
+        const reorderMs = videoDelayMs;
+        let minSeq = Infinity, oldestArrival = Infinity;
+        for (const [seq, { arrivedAt }] of videoPending) {
+            if (arrivedAt < oldestArrival) { oldestArrival = arrivedAt; minSeq = seq; }
+        }
+        if (Date.now() - oldestArrival < reorderMs) return;
+        const skipped = minSeq - next;
+        if (skipped > 0) { videoDrops += skipped; lastVideoDropMs = Date.now(); }
+        videoSeqRecv = minSeq - 1;
+        needKeyframe = true;
+    }
+}
+
+function drainAudioPending() {
+    for (;;) {
+        if (!hasFirstAudio) {
+            if (audioPending.size === 0) return;
+            offset_received = Math.min(...audioPending.keys()) - 1;
+            hasFirstAudio = true;
+        }
+        const next = offset_received + 1;
+        if (audioPending.has(next)) {
+            const { af } = audioPending.get(next);
+            audioPending.delete(next);
+            offset_received = next;
+            if (audioDecoder && audioDecoder.state === 'configured') {
+                try {
+                    audioDecoder.decode(new EncodedAudioChunk({
+                        type: 'key', timestamp: offset_received, data: b64ToU8(af.data)
+                    }));
+                } catch(e) { log_always('audio decode err:', e.message || e); }
+            }
+            continue;
+        }
+        if (audioPending.size === 0) return;
+        let minOffset = Infinity, oldestArrival = Infinity;
+        for (const [offset, { arrivedAt }] of audioPending) {
+            if (arrivedAt < oldestArrival) { oldestArrival = arrivedAt; minOffset = offset; }
+        }
+        if (Date.now() - oldestArrival < videoDelayMs) return;
+        const skipped = minOffset - next;
+        if (skipped > 0) { audioDrops += skipped; lastAudioDropMs = Date.now(); }
+        offset_received = minOffset - 1;
+    }
+}
+
+let socket;
+function connect() {
+    log_always('ws connecting');
+    socket = new WebSocket(ws_url_input.value);
+    socket.onclose = () => { log_always('ws closed, reconnecting'); setTimeout(connect, 200); };
+    socket.onopen = () => {
+        let work = Promise.resolve();
+        socket.onmessage = event => {
+            work = work.then(() => {
+                let outer, messages, src, forwarded = false;
+                try { outer = JSON.parse(event.data); } catch(e) { log_always('parse err', e); return; }
+                if ('Forwarded' in outer[0]) {
+                    src = outer[0].Forwarded.from_ed25519;
+                    forwarded = true;
+                    if (their_ed25519.value && src !== their_ed25519.value) return;
+                    try { messages = JSON.parse(outer[0].Forwarded.messages); }
+                    catch(e) { log_always('inner parse err', e); return; }
+                } else {
+                    messages = outer;
+                }
+                for (const msg of messages) {
+                    log(JSON.stringify(msg));
+                    if (!forwarded && 'YourEd25519' in msg) {
+                        my_ed25519 = msg.YourEd25519.ed25519; update_links();
+                    }
+                    if (!forwarded && 'PleaseSignYourPub' in msg) {
+                        my_ed25519 = msg.PleaseSignYourPub.ed25519; update_links();
+                    }
+                    if (forwarded && 'VideoFrame' in msg) {
+                        const vf = msg.VideoFrame;
+                        if (vf.codec !== 'vp8') continue;
+                        if (vf.seq !== undefined) {
+                            if (vf.seq <= videoSeqRecv) continue;
+                            if (!videoPending.has(vf.seq))
+                                videoPending.set(vf.seq, { vf, arrivedAt: Date.now() });
+                        } else {
+                            decodeVideoFrame(vf);
+                        }
+                        drainVideoPending();
+                    }
+                    if (forwarded && 'AudioFrame' in msg) {
+                        const af = msg.AudioFrame;
+                        if (af.format === 'opus' && af.sampleRate === 48000 && af.channels === 1
+                                && af.offset > offset_received) {
+                            if (!audioPending.has(af.offset))
+                                audioPending.set(af.offset, { af, arrivedAt: Date.now() });
+                            drainAudioPending();
+                        }
+                    }
+                    if (forwarded && 'VideoPing' in msg) {
+                        if (socket.readyState === WebSocket.OPEN)
+                            socket.send(JSON.stringify([{Forward:{to_ed25519:src,
+                                messages:[{VideoPong:{seq:msg.VideoPing.seq,t:msg.VideoPing.t}}]}}]));
+                    }
+                    if (forwarded && 'VideoPong' in msg) {
+                        videoChartData[Math.floor(msg.VideoPong.t/CHART_MS_PER_COL)%CHART_W] = Date.now() - msg.VideoPong.t;
+                        pendingVideoPings.delete(msg.VideoPong.seq);
+                    }
+                    if (forwarded && 'AudioPing' in msg) {
+                        if (socket.readyState === WebSocket.OPEN)
+                            socket.send(JSON.stringify([{Forward:{to_ed25519:src,
+                                messages:[{AudioPong:{seq:msg.AudioPing.seq,t:msg.AudioPing.t,buf:videoDelayMs}}]}}]));
+                    }
+                    if (forwarded && 'AudioPong' in msg) {
+                        const rtt = Date.now() - msg.AudioPong.t;
+                        audioChartData[Math.floor(msg.AudioPong.t/CHART_MS_PER_COL)%CHART_W] = rtt;
+                        lastAudioRtt = rtt;
+                        lastRemoteBuf = msg.AudioPong.buf ?? null;
+                        pendingAudioPings.delete(msg.AudioPong.seq);
+                    }
+                    // Exchange ETH addresses + Safe address with peer over the existing P2P channel
+                    if (forwarded && 'EthAddr' in msg) {
+                        handlePeerEthAddr(msg.EthAddr);
+                    }
+                }
+            });
+        };
+        new URLSearchParams(window.location.search).forEach((v, k) => {
+            if (k === 'ed25519') { their_ed25519.value = v; update_links(); }
+        });
+    };
+}
+
+const statsEl = document.getElementById('stats');
+(function renderLoop() {
+    const now = Date.now();
+    while (videoQueue.length && videoQueue[0].due <= now) {
+        const { bm } = videoQueue.shift();
+        if (lastVideoFrame) lastVideoFrame.close();
+        lastVideoFrame = bm;
+    }
+    const ctx2d = remoteCanvas.getContext('2d');
+    const cw = remoteCanvas.width, ch = remoteCanvas.height;
+    if (lastVideoFrame) ctx2d.drawImage(lastVideoFrame, 0, 0);
+
+    const nowCol = Math.floor(now / CHART_MS_PER_COL) % CHART_W;
+    if (nowCol !== latChartCursor) {
+        let c = latChartCursor;
+        while (c !== nowCol) {
+            c = (c + 1) % CHART_W;
+            audioChartData[c] = null;
+            videoChartData[c] = null;
+        }
+        audioChartData[(nowCol + 1) % CHART_W] = null;
+        videoChartData[(nowCol + 1) % CHART_W] = null;
+        latChartCursor = nowCol;
+    }
+
+    if (diagEnabled && cw > 0 && ch > 0) {
+        for (let c = 0; c < CHART_W; c++) {
+            const x  = Math.round(c       * cw / CHART_W);
+            const x1 = Math.round((c + 1) * cw / CHART_W);
+            const bw = Math.max(1, x1 - x);
+            if (videoChartData[c] !== null) {
+                const barH = Math.min(ch, Math.round(videoChartData[c] * ch / CHART_MAX_RTT));
+                ctx2d.fillStyle = 'rgba(30,160,255,0.55)';
+                ctx2d.fillRect(x, ch - barH, bw, barH);
+            }
+            if (audioChartData[c] !== null) {
+                const barH = Math.min(ch, Math.round(audioChartData[c] * ch / CHART_MAX_RTT));
+                ctx2d.fillStyle = 'rgba(255,160,0,0.65)';
+                ctx2d.fillRect(x, ch - barH, bw, barH);
+            }
+        }
+    }
+    requestAnimationFrame(renderLoop);
+})();
+
+const TIP_BUF = `Adaptive jitter buffer target.`;
+const TIP_RING = `Current audio buffer depth.`;
+function tipHtml(label, tip) { return `<span class="tip-wrap">${label}<span class="tip">${tip}</span></span>`; }
+
+setInterval(() => {
+    drainVideoPending();
+    drainAudioPending();
+    const now = Date.now();
+    const ago = ms => ms ? Math.round((now - ms)/1000)+'s ago' : 'never';
+    const sr = sendW && sendH ? sendW+'x'+sendH : '--';
+    const rr = remoteCanvas.width && remoteCanvas.height ? remoteCanvas.width+'x'+remoteCanvas.height : '--';
+    const ringDepth = (writeIdx - readIdx + RING_SIZE) & (RING_SIZE - 1);
+    const rttStr = lastAudioRtt !== null ? lastAudioRtt+'ms' : '--';
+    const remoteBufStr = lastRemoteBuf !== null ? lastRemoteBuf+'ms' : '--';
+    const est1way = (lastAudioRtt !== null && lastRemoteBuf !== null) ? Math.round(lastAudioRtt/2+lastRemoteBuf)+'ms' : '--';
+    const estTotal = (lastAudioRtt !== null && lastRemoteBuf !== null) ? Math.round(lastAudioRtt/2+lastRemoteBuf+videoDelayMs)+'ms' : '--';
+    const bpsFloor = now - BPS_WINDOW_MS;
+    while (keyframeBits.length   && keyframeBits[0].t   < bpsFloor) keyframeBits.shift();
+    while (deltaframeBits.length && deltaframeBits[0].t < bpsFloor) deltaframeBits.shift();
+    const keyBps   = Math.round(keyframeBits.reduce((s, x)   => s + x.bytes, 0) * 8 / (BPS_WINDOW_MS / 1000));
+    const deltaBps = Math.round(deltaframeBits.reduce((s, x) => s + x.bytes, 0) * 8 / (BPS_WINDOW_MS / 1000));
+    const fmtBps = n => n >= 1000 ? (n/1000).toFixed(1)+'kbps' : n+'bps';
+    statsEl.innerHTML =
+        `send: ${sr}  recv: ${rr}  ${tipHtml('buf target',TIP_BUF)}: ${videoDelayMs}ms  ${tipHtml('ring',TIP_RING)}: ${Math.round(ringDepth/AUDIO_RATE*1000)}ms\n` +
+        `net RTT: ${rttStr}  remote buf: ${remoteBufStr}  est 1-way: ${est1way}  est total: ${estTotal}\n` +
+        `video key: ${fmtBps(keyBps)}  delta: ${fmtBps(deltaBps)}  (5s avg, raw VP8)\n` +
+        `video loss: ${videoDrops}  last: ${ago(lastVideoDropMs)}\n` +
+        `audio loss: ${audioDrops}  last: ${ago(lastAudioDropMs)}`;
+}, 1000);
+
+document.addEventListener('click', e => {
+    const wrap = e.target.closest('.tip-wrap');
+    document.querySelectorAll('.tip-wrap.tip-open').forEach(el => { if (el !== wrap) el.classList.remove('tip-open'); });
+    if (wrap) { wrap.classList.toggle('tip-open'); e.stopPropagation(); }
+});
+
+connect();
+
+// ======== WEEB-3 SWARM INTEGRATION ===========================================
+//
+// Sepolia testnet contract addresses (from weeb-3/src/on_chain.rs):
+const SEPOLIA_CHAIN_ID   = 11155111;
+const SBZZ_TOKEN         = '0x543dDb01Ba47acB11de34891cD86B675F04840db';  // Sepolia BZZ
+const POSTAGE_STAMP_ADDR = '0xcdfdC3752caaA826fE62531E0000C40546eC56A6';   // Sepolia postage stamp
+//
+// WalletConnect project ID reused from weeb-3 (replace if you have your own):
+const WC_PROJECT_ID = '64c5f91181ce0a3192a783346a475d23';
+
+let weeb3Node    = null;   // Weeb3No103 instance
+let myEthAddress = null;   // connected MetaMask/WC account
+let swarmChunks  = [];
+let swarmRecCanvas  = null;
+let swarmRecRaf     = null;
+let swarmRecAudioDest = null;
+let swarmRecMicSrc    = null;
+let swarmRecorder     = null;
+
+const weeb3Status   = document.getElementById('weeb3Status');
+const batchStatus   = document.getElementById('batchStatus');
+const recStatus     = document.getElementById('recStatus');
+const swarmResultEl = document.getElementById('swarmResult');
+const weeb3Logs     = document.getElementById('weeb3Logs');
+const startRecBtn   = document.getElementById('startRecBtn');
+const stopRecBtn    = document.getElementById('stopRecBtn');
+const recLedSwarm   = document.getElementById('recLedSwarm');
+
+function swarmLog(msg) {
+    const d = document.createElement('div');
+    d.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+    weeb3Logs.prepend(d);
+    while (weeb3Logs.children.length > 50) weeb3Logs.removeChild(weeb3Logs.lastChild);
+}
+
+// ---- Init weeb-3 WASM -------------------------------------------------------
+document.getElementById('initWeeb3Btn').onclick = async () => {
+    const path = document.getElementById('weeb3Path').value.trim();
+    weeb3Status.textContent = 'loading WASM…';
+    try {
+        // Dynamic import so the WASM path is configurable at runtime
+        const mod = await import(/* @vite-ignore */ path);
+        await mod.default();   // init()
+        const { Weeb3No103, BootstrapNode } = mod;
+
+        weeb3Node = new Weeb3No103();
+
+        const bootstrapLines = document.getElementById('bootstrapNodes').value
+            .split('\n').map(l => l.trim()).filter(Boolean);
+        const networkId = document.getElementById('networkId').value.trim() || '10';
+
+        const nodes = bootstrapLines.map(ma => new BootstrapNode(ma, true));
+        weeb3Node.start(nodes, networkId);
+
+        weeb3Status.style.color = '#080';
+        weeb3Status.textContent = `OK — ${bootstrapLines.length} bootstrap nodes dialling`;
+        swarmLog(`weeb-3 started, network ${networkId}`);
+
+        // Poll connection counts every second
+        setInterval(async () => {
+            // Weeb3No103 wraps the inner Weeb3 which exposes get_connections / get_ongoing_connections
+            // Access them via the inner if available, otherwise skip silently
+            try {
+                const inner = weeb3Node.inner;
+                if (inner) {
+                    document.getElementById('weeb3Ongoing').textContent   = await inner.get_ongoing_connections();
+                    document.getElementById('weeb3Connected').textContent = await inner.get_connections();
+                    const logs = await inner.get_current_logs();
+                    for (const l of logs) swarmLog(l);
+                }
+            } catch(_) {}
+        }, 1000);
+    } catch(e) {
+        weeb3Status.style.color = '#c00';
+        weeb3Status.textContent = 'failed: ' + (e.message || e);
+        swarmLog('Init error: ' + (e.message || e));
+    }
+};
+
+// ---- Wallet connect ---------------------------------------------------------
+document.getElementById('connectWalletBtn').onclick = async () => {
+    batchStatus.textContent = 'Connecting wallet…';
+    const result = await window.weeb3EnsureEip1193(WC_PROJECT_ID);
+    if (!result.ok) {
+        batchStatus.textContent = 'Wallet connect failed: ' + result.error;
+        return;
+    }
+    myEthAddress = result.accounts[0];
+    document.getElementById('myEthAddr').value = myEthAddress;
+    batchStatus.textContent = `Connected: ${myEthAddress.slice(0,8)}… (${result.via})`;
+    shareEthAddrWithPeer();
+};
+
+function shareEthAddrWithPeer() {
+    if (!myEthAddress || !socket || socket.readyState !== WebSocket.OPEN || !their_ed25519.value) return;
+    socket.send(JSON.stringify([{Forward:{
+        to_ed25519: their_ed25519.value,
+        messages: [{EthAddr:{ addr: myEthAddress, safe: document.getElementById('safeAddr').value.trim() || null }}]
+    }}]));
+}
+their_ed25519.addEventListener('change', () => { if (myEthAddress) shareEthAddrWithPeer(); });
+
+function handlePeerEthAddr(msg) {
+    document.getElementById('theirEthAddr').value = msg.addr || '';
+    document.getElementById('theirEthStatus').textContent = 'received from peer';
+    if (msg.safe && !document.getElementById('safeAddr').value)
+        document.getElementById('safeAddr').value = msg.safe;
+    swarmLog('peer ETH addr: ' + msg.addr + (msg.safe ? ' safe: ' + msg.safe : ''));
+}
+
+// ---- Buy storage batch (triggers weeb-3's internal purchase flow) -----------
+// weeb-3's buy_postage_batch_with_payer is called from WASM and stores the
+// batch + owner key in IndexedDB. We trigger it via the same path as weeb-3's UI:
+// set window.weeb3EnsureEip1193 (already done above) then call the WASM function.
+// Because post_upload reads from IndexedDB, this batch persists across page loads.
+document.getElementById('buyBatchBtn').onclick = async () => {
+    if (!weeb3Node) { batchStatus.textContent = 'Init weeb-3 first'; return; }
+    if (!myEthAddress) { batchStatus.textContent = 'Connect wallet first'; return; }
+
+    const days  = parseInt(document.getElementById('batchDays').value) || 365;
+    const depth = 17 + parseInt(document.getElementById('batchSize').value || '3');
+
+    batchStatus.textContent = `Buying batch depth=${depth} valid=${days}d — check MetaMask…`;
+
+    // The batch purchase is handled entirely within the WASM.
+    // We trigger it by calling the inner Weeb3's upload_port via post_upload
+    // with a tiny dummy file — but that only works if a batch already exists.
+    //
+    // Correct path: weeb-3 exposes buy_postage_batch_with_payer through the
+    // interweeb() entry point. Since that entry point expects specific DOM IDs,
+    // we reproduce the relevant call here using the same weeb3EnsureEip1193 helper.
+    //
+    // Step 1: ensure EIP-1193 provider is connected (already done above).
+    // Step 2: call WASM buy_postage_batch_with_payer via the inner Weeb3 object.
+    //   Unfortunately this function is not directly #[wasm_bindgen]-exported on
+    //   Weeb3No103, so we reach in through the inner property if available.
+    //
+    try {
+        const inner = weeb3Node.inner;
+        if (!inner) {
+            batchStatus.textContent = 'inner not accessible — use weeb-3 UI to buy batch, then return here';
+            return;
+        }
+        // The inner Weeb3 has no direct buy-batch method exposed.
+        // Direct the user to the full weeb-3 page for the one-time batch purchase.
+        batchStatus.textContent =
+            'Batch purchase requires the full weeb-3 UI (one-time setup). ' +
+            'Open the weeb-3 page, buy storage there, then come back — the batch is stored in ' +
+            'IndexedDB and this page will use it automatically for uploads.';
+    } catch(_) {
+        batchStatus.textContent =
+            'Please buy storage via the weeb-3 page (one-time). IndexedDB batch persists here.';
+    }
+};
+
+// ---- Gnosis Safe: propose sending SBZZ from Safe to my MetaMask address ----
+// The caller whose MetaMask holds SBZZ buys the batch; the other caller's Safe
+// contributes by sending them SBZZ first.
+//
+// Sepolia Safe Transaction Service:  https://safe-transaction-sepolia.safe.global/api/v1
+//
+// Flow:
+//   1. Both callers share a 2-of-2 Safe on Sepolia.
+//   2. Click "Propose Safe tx": proposes an SBZZ transfer from the Safe to your MetaMask.
+//   3. Peer clicks "Sign pending Safe tx" to add their signature.
+//   4. Either executes via Safe web app or wallet.
+//   5. Once you have SBZZ, buy the batch via the weeb-3 UI, then use this page for upload.
+document.getElementById('proposeSafeBtn').onclick = async () => {
+    if (!window.ethereum || !myEthAddress) { batchStatus.textContent = 'Connect wallet first'; return; }
+    if (!window.ethers) { batchStatus.textContent = 'ethers.js not loaded'; return; }
+    const safeAddr = document.getElementById('safeAddr').value.trim();
+    if (!safeAddr) { batchStatus.textContent = 'Enter Gnosis Safe address'; return; }
+
+    const { ethers } = window;
+    try {
+        const chainHex = await window.ethereum.request({ method: 'eth_chainId' });
+        if (parseInt(chainHex, 16) !== SEPOLIA_CHAIN_ID) {
+            batchStatus.textContent = 'Switch wallet to Sepolia (chain 11155111) first';
+            return;
+        }
+
+        const sbzzWei = document.getElementById('sbzzAmount').value.trim();
+        // encode ERC-20 transfer(address,uint256)
+        const data = ethers.utils.hexConcat([
+            '0xa9059cbb',
+            ethers.utils.defaultAbiCoder.encode(['address', 'uint256'], [myEthAddress, sbzzWei])
+        ]);
+
+        const safeApi = document.getElementById('safeApiUrl').value.trim();
+        batchStatus.textContent = 'Fetching Safe nonce…';
+        const infoResp = await fetch(`${safeApi}/safes/${safeAddr}/`);
+        if (!infoResp.ok) throw new Error('Safe API ' + infoResp.status);
+        const safeInfo = await infoResp.json();
+        const nonce = safeInfo.nonce;
+
+        const safeTxMsg = {
+            to:             ethers.utils.getAddress(SBZZ_TOKEN),
+            value:          '0',
+            data,
+            operation:      0,
+            safeTxGas:      '0',
+            baseGas:        '0',
+            gasPrice:       '0',
+            gasToken:       '0x0000000000000000000000000000000000000000',
+            refundReceiver: '0x0000000000000000000000000000000000000000',
+            nonce:          String(nonce),
+        };
+
+        const typedData = {
+            types: {
+                EIP712Domain: [
+                    { name: 'chainId', type: 'uint256' },
+                    { name: 'verifyingContract', type: 'address' }
+                ],
+                SafeTx: [
+                    { name: 'to',             type: 'address' },
+                    { name: 'value',          type: 'uint256' },
+                    { name: 'data',           type: 'bytes'   },
+                    { name: 'operation',      type: 'uint8'   },
+                    { name: 'safeTxGas',      type: 'uint256' },
+                    { name: 'baseGas',        type: 'uint256' },
+                    { name: 'gasPrice',       type: 'uint256' },
+                    { name: 'gasToken',       type: 'address' },
+                    { name: 'refundReceiver', type: 'address' },
+                    { name: 'nonce',          type: 'uint256' }
+                ]
+            },
+            domain: { chainId: SEPOLIA_CHAIN_ID, verifyingContract: safeAddr },
+            primaryType: 'SafeTx',
+            message: safeTxMsg
+        };
+
+        batchStatus.textContent = 'Waiting for wallet signature…';
+        const signature = await window.ethereum.request({
+            method: 'eth_signTypedData_v4',
+            params: [myEthAddress, JSON.stringify(typedData)]
+        });
+
+        // Compute contractTransactionHash for the Safe Tx Service
+        const SAFE_TX_TYPEHASH = ethers.utils.keccak256(ethers.utils.toUtf8Bytes(
+            'SafeTx(address to,uint256 value,bytes data,uint8 operation,uint256 safeTxGas,uint256 baseGas,uint256 gasPrice,address gasToken,address refundReceiver,uint256 nonce)'
+        ));
+        const DOMAIN_TYPEHASH = ethers.utils.keccak256(ethers.utils.toUtf8Bytes(
+            'EIP712Domain(uint256 chainId,address verifyingContract)'
+        ));
+        const domainSep = ethers.utils.keccak256(
+            ethers.utils.defaultAbiCoder.encode(
+                ['bytes32', 'uint256', 'address'],
+                [DOMAIN_TYPEHASH, SEPOLIA_CHAIN_ID, safeAddr]
+            )
+        );
+        const encodedTx = ethers.utils.defaultAbiCoder.encode(
+            ['bytes32','address','uint256','bytes32','uint8','uint256','uint256','uint256','address','address','uint256'],
+            [
+                SAFE_TX_TYPEHASH, safeTxMsg.to, safeTxMsg.value,
+                ethers.utils.keccak256(safeTxMsg.data),
+                safeTxMsg.operation, safeTxMsg.safeTxGas, safeTxMsg.baseGas,
+                safeTxMsg.gasPrice, safeTxMsg.gasToken, safeTxMsg.refundReceiver, safeTxMsg.nonce,
+            ]
+        );
+        const contractTransactionHash = ethers.utils.keccak256(
+            ethers.utils.concat(['0x1901', domainSep, ethers.utils.keccak256(encodedTx)])
+        );
+
+        batchStatus.textContent = 'Submitting to Safe Transaction Service…';
+        const postResp = await fetch(`${safeApi}/safes/${safeAddr}/multisig-transactions/`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...safeTxMsg, contractTransactionHash, sender: myEthAddress, signature, origin: 'CJP2P Swarm Recording' })
+        });
+        if (!postResp.ok) throw new Error(`Safe API ${postResp.status}: ${await postResp.text()}`);
+
+        const sbzzEth = (BigInt(sbzzWei) * 100n / BigInt('1000000000000000000')) / 100n;
+        batchStatus.textContent =
+            `Safe tx proposed: send ${sbzzEth} SBZZ from Safe to your MetaMask. ` +
+            `Peer must sign → execute → then buy storage via weeb-3 UI.`;
+    } catch(e) {
+        batchStatus.textContent = 'Safe propose failed: ' + (e.message || e);
+    }
+};
+
+// ---- Sign a pending Safe tx -------------------------------------------------
+document.getElementById('signSafeBtn').onclick = async () => {
+    if (!window.ethereum || !myEthAddress) { batchStatus.textContent = 'Connect wallet first'; return; }
+    const safeAddr = document.getElementById('safeAddr').value.trim();
+    if (!safeAddr) { batchStatus.textContent = 'Enter Gnosis Safe address'; return; }
+    const { ethers } = window;
+    const safeApi = document.getElementById('safeApiUrl').value.trim();
+    try {
+        batchStatus.textContent = 'Fetching pending txs…';
+        const resp = await fetch(`${safeApi}/safes/${safeAddr}/multisig-transactions/?executed=false&limit=5`);
+        if (!resp.ok) throw new Error('Safe API ' + resp.status);
+        const data = await resp.json();
+        const pending = (data.results || []).sort((a, b) => b.nonce - a.nonce);
+        if (!pending.length) { batchStatus.textContent = 'No pending txs found'; return; }
+        const tx = pending[0];
+
+        const typedData = {
+            types: {
+                EIP712Domain: [
+                    { name: 'chainId', type: 'uint256' },
+                    { name: 'verifyingContract', type: 'address' }
+                ],
+                SafeTx: [
+                    { name: 'to',             type: 'address' },
+                    { name: 'value',          type: 'uint256' },
+                    { name: 'data',           type: 'bytes'   },
+                    { name: 'operation',      type: 'uint8'   },
+                    { name: 'safeTxGas',      type: 'uint256' },
+                    { name: 'baseGas',        type: 'uint256' },
+                    { name: 'gasPrice',       type: 'uint256' },
+                    { name: 'gasToken',       type: 'address' },
+                    { name: 'refundReceiver', type: 'address' },
+                    { name: 'nonce',          type: 'uint256' }
+                ]
+            },
+            domain: { chainId: SEPOLIA_CHAIN_ID, verifyingContract: safeAddr },
+            primaryType: 'SafeTx',
+            message: {
+                to: tx.to, value: tx.value || '0', data: tx.data || '0x',
+                operation: tx.operation,
+                safeTxGas: String(tx.safeTxGas), baseGas: String(tx.baseGas),
+                gasPrice: String(tx.gasPrice), gasToken: tx.gasToken,
+                refundReceiver: tx.refundReceiver, nonce: String(tx.nonce),
+            }
+        };
+
+        batchStatus.textContent = `Signing nonce=${tx.nonce}… check wallet`;
+        const signature = await window.ethereum.request({
+            method: 'eth_signTypedData_v4',
+            params: [myEthAddress, JSON.stringify(typedData)]
+        });
+
+        const confResp = await fetch(`${safeApi}/multisig-transactions/${tx.safeTxHash}/confirmations/`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ signature })
+        });
+        if (!confResp.ok) throw new Error(`Confirm API ${confResp.status}: ${await confResp.text()}`);
+
+        const have   = (tx.confirmations || []).length + 1;
+        const needed = tx.confirmationsRequired || 2;
+        batchStatus.textContent =
+            `Signed! ${have}/${needed} confirmations. ` +
+            (have >= needed ? 'Ready to execute via Safe web app.' : `Waiting for ${needed - have} more.`);
+    } catch(e) {
+        batchStatus.textContent = 'Sign failed: ' + (e.message || e);
+    }
+};
+
+// ---- Recording: combined local+remote canvas + mixed audio ------------------
+function buildRecordingStream() {
+    swarmRecCanvas = document.createElement('canvas');
+    swarmRecCanvas.width  = 640;
+    swarmRecCanvas.height = 240;
+    const ctx = swarmRecCanvas.getContext('2d');
+
+    function drawFrame() {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, 640, 240);
+        if (localVideo.readyState >= 2)
+            ctx.drawImage(localVideo, 0, 0, 320, 240);
+        if (remoteCanvas.width > 0 && remoteCanvas.height > 0)
+            ctx.drawImage(remoteCanvas, 320, 0, 320, 240);
+        swarmRecRaf = requestAnimationFrame(drawFrame);
+    }
+    drawFrame();
+
+    const tracks = [...swarmRecCanvas.captureStream(30).getVideoTracks()];
+
+    if (audioCtx) {
+        swarmRecAudioDest = audioCtx.createMediaStreamDestination();
+        if (camStream && camStream.getAudioTracks().length > 0) {
+            swarmRecMicSrc = audioCtx.createMediaStreamSource(camStream);
+            swarmRecMicSrc.connect(swarmRecAudioDest);
+        }
+        if (playProc) playProc.connect(swarmRecAudioDest);
+        tracks.push(...swarmRecAudioDest.stream.getAudioTracks());
+    }
+
+    return new MediaStream(tracks);
+}
+
+startRecBtn.onclick = async () => {
+    if (!camStream) { alert('Start camera/mic first (Unmute Mic)'); return; }
+    await ensureAudioCtx();
+
+    const stream  = buildRecordingStream();
+    swarmChunks   = [];
+    const mimeType = ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm']
+        .find(t => MediaRecorder.isTypeSupported(t)) || '';
+
+    swarmRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
+    swarmRecorder.ondataavailable = e => { if (e.data.size > 0) swarmChunks.push(e.data); };
+    swarmRecorder.start(2000);
+
+    startRecBtn.disabled = true;
+    stopRecBtn.disabled  = false;
+    setLed(recLedSwarm, true);
+    recStatus.textContent = 'Recording…';
+};
+
+stopRecBtn.onclick = () => {
+    if (!swarmRecorder) return;
+    swarmRecorder.stop();
+    if (swarmRecRaf) { cancelAnimationFrame(swarmRecRaf); swarmRecRaf = null; }
+    if (swarmRecMicSrc) { try { swarmRecMicSrc.disconnect(); } catch {} swarmRecMicSrc = null; }
+    if (playProc && swarmRecAudioDest) { try { playProc.disconnect(swarmRecAudioDest); } catch {} }
+    swarmRecAudioDest = null;
+
+    startRecBtn.disabled = false;
+    stopRecBtn.disabled  = true;
+    setLed(recLedSwarm, false);
+    const sizeMB = (swarmChunks.reduce((s, c) => s + c.size, 0) / 1048576).toFixed(1);
+    recStatus.textContent = `Stopped — ${sizeMB} MB. Click Upload to push to Swarm.`;
+};
+
+// ---- Upload to Swarm via weeb-3 node.upload() --------------------------------
+// Weeb3No103.upload(file, encrypt, indexString, addToFeed, feedTopic)
+//   returns { reference: "<hex-hash>", resources: [{body,mime,path}] }
+// The batch + owner key must already be in IndexedDB (from a previous weeb-3
+// batch purchase). The WASM reads them automatically.
+document.getElementById('uploadSwarmBtn').onclick = async () => {
+    if (!weeb3Node) { recStatus.textContent = 'Init weeb-3 first'; return; }
+    if (!swarmChunks.length) { recStatus.textContent = 'No recording yet'; return; }
+
+    const blob     = new Blob(swarmChunks, { type: 'video/webm' });
+    const sizeMB   = (blob.size / 1048576).toFixed(1);
+    const filename = `call-${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.webm`;
+    const file     = new File([blob], filename, { type: blob.type });
+
+    recStatus.textContent = `Uploading ${sizeMB} MB via weeb-3 to Swarm…`;
+    swarmResultEl.style.display = 'none';
+
+    try {
+        // Weeb3No103.upload() — no extra headers/API keys needed; uses IndexedDB batch
+        const result = await weeb3Node.upload(
+            file,
+            false,    // encrypt — set true for private recordings
+            filename, // index document name
+            false,    // addToFeed
+            ''        // feedTopic
+        );
+
+        const ref = result.reference || '';
+
+        if (!ref || ref === '... result ...' || ref.startsWith('upload result')) {
+            // upload() returned a status message rather than a hash — batch likely missing
+            swarmResultEl.innerHTML =
+                `<b>Upload did not return a Swarm hash.</b><br>` +
+                `Most likely reason: no postage batch in IndexedDB.<br>` +
+                `Fix: <a href="/weeb-3/" target="_blank">Open the weeb-3 UI</a>, buy storage there, ` +
+                `then try uploading here again. The batch persists in IndexedDB across page loads.`;
+        } else {
+            swarmResultEl.innerHTML =
+                `<b>Uploaded to Swarm!</b><br>` +
+                `Reference: <code>${ref}</code><br>` +
+                `<a href="https://gateway.ethswarm.org/bzz/${ref}/" target="_blank">Open on Ethswarm public gateway</a>`;
+        }
+        swarmResultEl.style.display = '';
+        recStatus.textContent = 'Done.';
+    } catch(e) {
+        recStatus.textContent = 'Upload failed: ' + (e.message || e);
+        swarmLog('Upload error: ' + (e.message || e));
+    }
+};
+
+// ---- Reset stamp ------------------------------------------------------------
+document.getElementById('resetStampBtn').onclick = async () => {
+    if (!weeb3Node) { recStatus.textContent = 'Init weeb-3 first'; return; }
+    if (!confirm('Reset stamp? This lets you overwrite previous uploads with new ones.')) return;
+    try {
+        const result = await weeb3Node.resetStamp();
+        recStatus.textContent = result.message || 'Stamp reset.';
+    } catch(e) {
+        recStatus.textContent = 'Reset failed: ' + (e.message || e);
+    }
+};
+
+// ---- Manual batch import into IndexedDB -------------------------------------
+// weeb-3 stores its batch in IndexedDB (db: batchstore_data, store: weeb_datastore).
+// Keys: batch_0_id (32 raw bytes), batch_owner_0_key (32 raw bytes),
+//       batch_0_bucket_limit (4 bytes, little-endian u32 = 1 << (depth - 16)).
+// The owner key must be the private key whose address was registered as the
+// batch owner on-chain (the address passed to the postage contract's createBatch).
+
+function idbOpen(dbName, storeName) {
+    return new Promise((resolve, reject) => {
+        const req = indexedDB.open(dbName);
+        req.onupgradeneeded = e => e.target.result.createObjectStore(storeName);
+        req.onsuccess = e => resolve(e.target.result);
+        req.onerror = () => reject(req.error);
+    });
+}
+
+async function idbPut(dbName, storeName, key, value) {
+    const db = await idbOpen(dbName, storeName);
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(storeName, 'readwrite');
+        tx.objectStore(storeName).put(value, key);
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onerror   = () => { db.close(); reject(tx.error); };
+    });
+}
+
+async function idbGet(dbName, storeName, key) {
+    const db = await idbOpen(dbName, storeName);
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(storeName, 'readonly');
+        const req = tx.objectStore(storeName).get(key);
+        req.onsuccess = () => { db.close(); resolve(req.result); };
+        req.onerror   = () => { db.close(); reject(req.error); };
+    });
+}
+
+function hexToBytes(hex) {
+    hex = hex.replace(/^0x/, '');
+    if (hex.length % 2 !== 0) throw new Error('odd-length hex');
+    return new Uint8Array(hex.match(/.{2}/g).map(b => parseInt(b, 16)));
+}
+
+function bytesToHex(buf) {
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+const importBatchStatus = document.getElementById('importBatchStatus');
+
+document.getElementById('setBatchBtn').onclick = async () => {
+    const batchIdHex  = document.getElementById('manualBatchId').value.trim();
+    const ownerKeyHex = document.getElementById('manualOwnerKey').value.trim();
+    const depth       = parseInt(document.getElementById('manualBatchDepth').value) || 20;
+
+    let batchIdBytes, ownerKeyBytes;
+    try {
+        batchIdBytes  = hexToBytes(batchIdHex);
+        ownerKeyBytes = hexToBytes(ownerKeyHex);
+    } catch(e) {
+        importBatchStatus.textContent = 'Invalid hex: ' + e.message;
+        return;
+    }
+    if (batchIdBytes.length  !== 32) { importBatchStatus.textContent = 'Batch ID must be 32 bytes (64 hex chars)'; return; }
+    if (ownerKeyBytes.length !== 32) { importBatchStatus.textContent = 'Owner key must be 32 bytes (64 hex chars)'; return; }
+    if (depth < 17) { importBatchStatus.textContent = 'Depth must be ≥ 17'; return; }
+
+    const bucketLimit = 1 << (depth - 16);  // u32, matches weeb-3's buckets_for_depth()
+    const bucketLimitBytes = new Uint8Array(new Uint32Array([bucketLimit]).buffer); // little-endian
+
+    try {
+        const DB = 'batchstore_data', ST = 'weeb_datastore';
+        await idbPut(DB, ST, 'batch_0_id',          batchIdBytes);
+        await idbPut(DB, ST, 'batch_owner_0_key',   ownerKeyBytes);
+        await idbPut(DB, ST, 'batch_0_bucket_limit', bucketLimitBytes);
+        importBatchStatus.textContent =
+            `Written. ID: 0x${batchIdHex.slice(0,8).replace(/^0x/,'')}… depth=${depth} bucketLimit=${bucketLimit}`;
+    } catch(e) {
+        importBatchStatus.textContent = 'IndexedDB write failed: ' + (e.message || e);
+    }
+};
+
+document.getElementById('readBatchBtn').onclick = async () => {
+    try {
+        const DB = 'batchstore_data', ST = 'weeb_datastore';
+        const idBuf    = await idbGet(DB, ST, 'batch_0_id');
+        const keyBuf   = await idbGet(DB, ST, 'batch_owner_0_key');
+        const limBuf   = await idbGet(DB, ST, 'batch_0_bucket_limit');
+
+        const idHex  = idBuf  ? bytesToHex(idBuf)  : '(empty)';
+        const keyHex = keyBuf ? bytesToHex(keyBuf) : '(empty)';
+        const lim    = limBuf ? new Uint32Array(limBuf.buffer ?? new Uint8Array(limBuf).buffer)[0] : 0;
+
+        document.getElementById('manualBatchId').value  = idHex !== '(empty)' ? idHex : '';
+        document.getElementById('manualOwnerKey').value = keyHex !== '(empty)' ? keyHex : '';
+        importBatchStatus.textContent =
+            `ID: 0x${idHex.slice(0,12)}… key: 0x${keyHex.slice(0,8)}… bucketLimit: ${lim}`;
+    } catch(e) {
+        importBatchStatus.textContent = 'IndexedDB read failed: ' + (e.message || e);
+    }
+};
+</script>
+</body></html>
