@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html><head><title>CJP2P video chat</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.0/dist/ethers.umd.min.js"></script>
 <style>
 #videos { display:flex; gap:8px; flex-wrap:wrap; }
 @media(orientation:portrait) { #videos { flex-direction:column; } }
@@ -29,6 +30,12 @@ video, canvas { display:block; background:#000; }
 </style>
 </head>
 <body>
+<div id=ethstuff hidden>
+  gnosis safe address <input id=safe_address size=60>
+  <br>their eth addr <input id=their_eth_addr size=80>
+  <button id=connect-btn>Connect an Ethereum Wallet</button>
+  <br>
+</div>
 their ed25519: <input id=their_ed25519 size=80>
 <br>share: <a id=link href=""></a>
 <br>ws url: <input id=ws_url size=50>
@@ -57,6 +64,11 @@ their ed25519: <input id=their_ed25519 size=80>
   <button id=gainBtn>Gain: Off</button>
   <button id=debugBtn>debug log</button>
   <button id=diagBtn>Diag: Off</button>
+</div>
+<div style="display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;">
+  <label for=maxBufSlider>Max buf:</label>
+  <input type=range id=maxBufSlider min=50 max=2000 step=25 value=500 style="width:160px">
+  <span id=maxBufVal>500ms</span>
 </div>
 <pre id=stats style="font-size:11px;margin:4px 0;"></pre>
 <div id=logDiv></div>
@@ -128,8 +140,66 @@ function b64ToU8(b64) {
     return u8;
 }
 
-// -- identity -----------------------------------------------------------------
+// -- eth / identity -----------------------------------------------------------
 let my_ed25519 = null;
+let my_ed25519_to_sign = null;
+let my_eth_address = null;
+const signed_ed25519s = new Map();
+const safe_address    = document.getElementById('safe_address');
+const their_eth_addr  = document.getElementById('their_eth_addr');
+
+(function() {
+    const filename = location.pathname.split('/').pop();
+    const p = new URLSearchParams(location.search);
+    if (filename.toLowerCase() === 'ethphone.html' || p.has('eth') || p.has('safe'))
+        document.getElementById('ethstuff').hidden = false;
+})();
+
+function request_ed25519_from_eth_addr() {
+    if (socket && socket.readyState === WebSocket.OPEN && their_eth_addr.value)
+        socket.send(JSON.stringify([{GetPubByEth:{eth_addr:their_eth_addr.value}}]));
+}
+
+async function getSigners() {
+    if (!safe_address.value) return;
+    const accounts = await window.ethereum.request({ method: 'eth_accounts' });
+    my_eth_address = accounts[0];
+    const provider = new ethers.BrowserProvider(window.ethereum);
+    const abi = ["function getOwners() view returns (address[])"];
+    const safe = new ethers.Contract(safe_address.value, abi, provider);
+    const owners = await safe.getOwners();
+    owners.forEach(v => {
+        if (v.toUpperCase() !== my_eth_address.toUpperCase()) {
+            their_eth_addr.value = v;
+            request_ed25519_from_eth_addr();
+        }
+    });
+}
+
+document.getElementById('connect-btn').addEventListener('click', async () => {
+    if (!window.ethereum) { alert('Install MetaMask!'); return; }
+    const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+    my_eth_address = accounts[0];
+    if (my_ed25519_to_sign) {
+        const sig = await window.ethereum.request({
+            method: 'personal_sign',
+            params: ["my ed25519 public key is " + my_ed25519_to_sign, my_eth_address],
+        });
+        socket.send(JSON.stringify([{MyPublicKey:{ed25519h:my_ed25519,ed25519_eth_signed:sig}}]));
+    }
+    await getSigners();
+    document.getElementById('connect-btn').disabled = true;
+});
+
+their_eth_addr.addEventListener('input', () => {
+    their_ed25519.value = '';
+    request_ed25519_from_eth_addr();
+});
+
+safe_address.addEventListener('input', () => {
+    if (safe_address.value) document.getElementById('ethstuff').hidden = false;
+});
+
 function update_links() {
     if (!my_ed25519) return;
     const url = location.origin + location.pathname + '?ed25519=' + my_ed25519;
@@ -219,7 +289,7 @@ const RING_SIZE  = 32768;             // ~682ms capacity at 48kHz
 const AUDIO_RATE = 48000;
 const SP_FRAMES  = 512;              // ~10.7ms per ScriptProcessor callback
 const MIN_BUF    = SP_FRAMES;        // ~10.7ms minimum target
-const MAX_BUF    = 24000;            // ~500ms maximum target (handles 400ms+ spikes)
+let   MAX_BUF    = 24000;            // ~500ms maximum target (handles 400ms+ spikes)
 let   audioBufTarget = MIN_BUF;      // adaptive; drives videoDelayMs
 const ring = new Float32Array(RING_SIZE);
 let writeIdx = 0, readIdx = 0;
@@ -643,7 +713,24 @@ function connect() {
                         my_ed25519 = msg.YourEd25519.ed25519; update_links();
                     }
                     if (!forwarded && 'PleaseSignYourPub' in msg) {
-                        my_ed25519 = msg.PleaseSignYourPub.ed25519; update_links();
+                        my_ed25519_to_sign = msg.PleaseSignYourPub.ed25519;
+                        my_ed25519 = my_ed25519_to_sign; update_links();
+                    }
+                    if ('MyPublicKey' in msg) {
+                        const mpk = msg.MyPublicKey;
+                        const ed25519 = mpk.ed25519h;
+                        const sig = mpk.ed25519_eth_signed;
+                        const unsigned_message = "my ed25519 public key is " + ed25519;
+                        let signer = null;
+                        try { signer = ethers.verifyMessage(unsigned_message, sig); } catch(e) { log_always('verify failed:', e.message); }
+                        if (signer && their_eth_addr.value &&
+                                signer.toUpperCase() === their_eth_addr.value.toUpperCase()) {
+                            their_ed25519.value = ed25519;
+                            signed_ed25519s.set(ed25519, their_eth_addr.value);
+                            log_always('eth verified, ed25519:', ed25519);
+                        } else {
+                            log_always('eth key mismatch:', signer, '!=', their_eth_addr.value);
+                        }
                     }
                     if (forwarded && 'VideoFrame' in msg) {
                         const vf = msg.VideoFrame;
@@ -692,6 +779,16 @@ function connect() {
         };
         new URLSearchParams(window.location.search).forEach((v, k) => {
             if (k === 'ed25519') { their_ed25519.value = v; update_links(); }
+            if (k === 'eth') {
+                their_eth_addr.value = v;
+                document.getElementById('ethstuff').hidden = false;
+                request_ed25519_from_eth_addr();
+            }
+            if (k === 'safe') {
+                safe_address.value = v;
+                document.getElementById('ethstuff').hidden = false;
+                getSigners().catch(e => log_always('getSigners:', e.message || e));
+            }
         });
     };
 }
@@ -777,6 +874,18 @@ setInterval(() => {
         `video loss: ${videoDrops}  last: ${ago(lastVideoDropMs)}\n` +
         `audio loss: ${audioDrops}  last: ${ago(lastAudioDropMs)}`;
 }, 1000);
+
+// -- max buffer slider --------------------------------------------------------
+(function() {
+    const slider = document.getElementById('maxBufSlider');
+    const label  = document.getElementById('maxBufVal');
+    slider.oninput = () => {
+        const ms = parseInt(slider.value, 10);
+        MAX_BUF = Math.round(ms * AUDIO_RATE / 1000);
+        label.textContent = ms + 'ms';
+        if (audioBufTarget > MAX_BUF) audioBufTarget = MAX_BUF;
+    };
+})();
 
 // tap to toggle tooltips on touchscreens
 document.addEventListener('click', e => {

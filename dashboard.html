@@ -367,7 +367,7 @@ function renderChatLog() {
 }
 
 function openChat(pubkey) {
-  // Pre-populate chat5.html's localStorage with messages we've seen from this peer
+  // Pre-populate chat.html's localStorage with messages we've seen from this peer
   const msgs = chatHistory.filter(c => c.from === pubkey);
   if (msgs.length) {
     const text = msgs.map(c => `[${c.time}] ${c.text}`).join('\n');

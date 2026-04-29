@@ -85,9 +85,9 @@ debuging :
         }
         link.href = url;
         link.textContent = url; 
-        document.getElementById('video').href =  "http://localhost:24255/video.html?ed25519=" + their_ed25519.value;
-        document.getElementById('pong').href =  "http://localhost:24255/pong.html?ed25519=" + their_ed25519.value;
-        document.getElementById('line_mode').href =  "http://localhost:24255/chat/" + their_ed25519.value;
+        document.getElementById('video').href =  "video.html?ed25519=" + their_ed25519.value;
+        document.getElementById('pong').href =  "pong.html?ed25519=" + their_ed25519.value;
+        document.getElementById('line_mode').href =  "/chat/" + their_ed25519.value;
     }
     function lsKey(ed, suffix) { return 'cjp2p_' + ed + '_' + suffix; }
     function saveChat() {
