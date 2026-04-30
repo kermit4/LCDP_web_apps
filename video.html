@@ -294,6 +294,7 @@ let   audioBufTarget = MIN_BUF;      // adaptive; drives videoDelayMs
 const ring = new Float32Array(RING_SIZE);
 let writeIdx = 0, readIdx = 0;
 let inUnderrun = false;
+let holdForFill = false; // true after underrun: play silence until ring reaches audioBufTarget
 
 // -- audio receive decoder (no user gesture needed) ---------------------------
 if ('AudioDecoder' in window) {
@@ -356,6 +357,24 @@ async function ensureAudioCtx() {
     playProc = audioCtx.createScriptProcessor(SP_FRAMES, 1, 1);
     playProc.onaudioprocess = e => {
         const out = e.outputBuffer.getChannelData(0);
+        const depth = (writeIdx - readIdx + RING_SIZE) & (RING_SIZE - 1);
+
+        // After underrun: hold off playback until ring actually fills to target.
+        // Without this, audio resumes immediately on the first decoded packet and
+        // starves again instantly, causing the target to climb without bound.
+        if (holdForFill) {
+            if (depth >= audioBufTarget) {
+                holdForFill = false;
+                inUnderrun = false;
+            } else {
+                out.fill(0);
+                setLed(rxLed, false);
+                audioBufTarget = Math.max(MIN_BUF, audioBufTarget - 4);
+                videoDelayMs = Math.round(audioBufTarget / AUDIO_RATE * 1000);
+                return;
+            }
+        }
+
         let underrun = false;
         for (let i = 0; i < out.length; i++) {
             if (readIdx !== writeIdx) {
@@ -371,7 +390,10 @@ async function ensureAudioCtx() {
         if (underrun) {
             setLed(rxLed, false);
             // bump only on leading edge of each underrun period, not for every callback while starved
-            if (!inUnderrun) audioBufTarget = Math.min(MAX_BUF, audioBufTarget + SP_FRAMES * 4);
+            if (!inUnderrun) {
+                audioBufTarget = Math.min(MAX_BUF, audioBufTarget + SP_FRAMES * 4);
+                holdForFill = true;
+            }
             inUnderrun = true;
         } else {
             inUnderrun = false;
@@ -838,7 +860,7 @@ const statsEl = document.getElementById('stats');
     requestAnimationFrame(renderLoop);
 })();
 
-const TIP_BUF = `Adaptive jitter buffer target. Grows by ~43ms on any audio underrun (even one too small to hear), then slowly decays back to ~11ms minimum over ~100s. Also delays video by the same amount to keep A/V in sync.`;
+const TIP_BUF = `Adaptive jitter buffer target. On underrun, grows by ~43ms and holds playback silent until the ring fills to that depth (so the buffer is actually full before audio resumes). Then slowly decays back to ~11ms minimum over ~100s. Also delays video by the same amount to keep A/V in sync.`;
 const TIP_RING = `Current audio buffer depth -- milliseconds of decoded audio queued and waiting to play. When this hits zero the buffer underruns and buf\u00a0target increases.`;
 
 function tipHtml(label, tip) {
