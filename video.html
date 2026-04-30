@@ -594,7 +594,7 @@ document.getElementById('gainBtn').onclick = async () => {
 
 // -- video reorder buffer helpers ---------------------------------------------
 function decodeVideoFrame(vf) {
-    if (needKeyframe && !vf.keyframe) return;
+    //if (needKeyframe && !vf.keyframe) return;
     if (vf.w && vf.h && (vf.w !== remoteCanvas.width || vf.h !== remoteCanvas.height)) {
         if (decoder && decoder.state !== 'closed') { try { decoder.close(); } catch {} }
         decoder = makeDecoder(vf.w, vf.h);
