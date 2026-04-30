@@ -722,14 +722,12 @@ function connect() {
                         const sig = mpk.ed25519_eth_signed;
                         const unsigned_message = "my ed25519 public key is " + ed25519;
                         let signer = null;
-                        try { signer = ethers.verifyMessage(unsigned_message, sig); } catch(e) { log_always('verify failed:', e.message); }
+                        try { signer = ethers.verifyMessage(unsigned_message, sig); } catch(e) { log('verify failed:', e.message); }
                         if (signer && their_eth_addr.value &&
                                 signer.toUpperCase() === their_eth_addr.value.toUpperCase()) {
                             their_ed25519.value = ed25519;
                             signed_ed25519s.set(ed25519, their_eth_addr.value);
                             log_always('eth verified, ed25519:', ed25519);
-                        } else {
-                            log_always('eth key mismatch:', signer, '!=', their_eth_addr.value);
                         }
                     }
                     if (forwarded && 'VideoFrame' in msg) {
