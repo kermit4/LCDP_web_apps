@@ -40,6 +40,10 @@ their ed25519: <input id=their_ed25519 size=80>
 <br>share: <a id=link href=""></a>
 <br>ws url: <input id=ws_url size=50>
 <br><a href=/>status page</a>
+<div id=cameraRow style="font-size:12px;margin:3px 0;" hidden>
+  camera: <select id=cameraSelect></select>
+  <span id=zoomWrap hidden> &nbsp;zoom: <input type=range id=zoomSlider style="width:100px;vertical-align:middle"></span>
+</div>
 <p>
 <div id=videos>
   <div class=vid-wrap>
@@ -231,6 +235,106 @@ function fitEl(el, w, h) {
 // local video: let camera aspect ratio come through naturally
 fitEl(localVideo, 320, 240); // placeholder until camera starts
 
+// -- camera selection + zoom --------------------------------------------------
+let selectedCameraId = '';
+const cameraSelect = document.getElementById('cameraSelect');
+const cameraRow    = document.getElementById('cameraRow');
+const zoomWrap     = document.getElementById('zoomWrap');
+const zoomSlider   = document.getElementById('zoomSlider');
+
+async function populateCameras() {
+    const devices = await navigator.mediaDevices.enumerateDevices().catch(() => []);
+    const cameras = devices.filter(d => d.kind === 'videoinput');
+    if (cameras.length === 0) return;
+    cameraSelect.innerHTML = '';
+    cameras.forEach((cam, i) => {
+        const opt = document.createElement('option');
+        opt.value = cam.deviceId;
+        opt.textContent = cam.label || `Camera ${i + 1}`;
+        if (cam.deviceId === selectedCameraId) opt.selected = true;
+        cameraSelect.appendChild(opt);
+    });
+    if (!selectedCameraId && cameras.length > 0) selectedCameraId = cameras[0].deviceId;
+    cameraRow.hidden = false;
+}
+
+function checkZoom(vt) {
+    const caps = vt.getCapabilities ? vt.getCapabilities() : {};
+    if (caps.zoom) {
+        zoomSlider.min   = caps.zoom.min;
+        zoomSlider.max   = caps.zoom.max;
+        zoomSlider.step  = caps.zoom.step || 1;
+        zoomSlider.value = vt.getSettings().zoom ?? caps.zoom.min;
+        zoomWrap.hidden  = false;
+        zoomSlider.oninput = () => {
+            vt.applyConstraints({ advanced: [{ zoom: parseFloat(zoomSlider.value) }] }).catch(() => {});
+        };
+    } else {
+        zoomWrap.hidden = true;
+    }
+}
+
+async function switchCamera(deviceId) {
+    if (!camStream) { selectedCameraId = deviceId; return; }
+    if (frameReader) { try { frameReader.cancel(); } catch {} frameReader = null; }
+    camStream.getVideoTracks().forEach(t => { t.stop(); camStream.removeTrack(t); });
+    zoomWrap.hidden = true;
+    let newStream;
+    try {
+        newStream = await navigator.mediaDevices.getUserMedia({
+            video: { deviceId: { exact: deviceId }, width:{max:640}, height:{max:640}, frameRate:{ideal:24,max:30} }
+        });
+    } catch(e) { log_always('switchCamera failed:', e.message || e); return; }
+    const vt = newStream.getVideoTracks()[0];
+    camStream.addTrack(vt);
+    localVideo.srcObject = camStream;
+    const s = vt.getSettings();
+    let encW = s.width || 320;
+    let encH = s.height || 240;
+    const FPS = s.frameRate || 24;
+    const KEYFRAME_EVERY = Math.max(1, Math.round(FPS / 2));
+    log_always('camera switched:', encW, 'x', encH, '@', FPS, 'fps');
+    fitEl(localVideo, encW, encH);
+    checkZoom(vt);
+    if (encoder) {
+        try { await encoder.flush(); } catch {}
+        encoder.configure({ codec:'vp8', width:encW, height:encH, bitrate:200_000, framerate:FPS });
+        sendW = encW; sendH = encH; frameCount = 0;
+    }
+    if (encoder) {
+        const proc = new MediaStreamTrackProcessor({ track: vt });
+        frameReader = proc.readable.getReader();
+        const myReader = frameReader;
+        (async () => {
+            while (true) {
+                let r;
+                try { r = await myReader.read(); } catch { break; }
+                if (r.done) break;
+                if (myReader !== frameReader) { r.value?.close(); break; }
+                const frame = r.value;
+                if (videoMuted) { frame.close(); continue; }
+                if (frame.codedWidth !== encW || frame.codedHeight !== encH) {
+                    log_always('rotation:', frame.codedWidth, 'x', frame.codedHeight);
+                    try { await encoder.flush(); } catch {}
+                    encoder.configure({ codec:'vp8', width:frame.codedWidth, height:frame.codedHeight, bitrate:200_000, framerate:FPS });
+                    encW = frame.codedWidth; encH = frame.codedHeight; sendW = encW; sendH = encH; frameCount = 0;
+                    fitEl(localVideo, encW, encH);
+                }
+                if (encoder.encodeQueueSize > 2) { frame.close(); continue; }
+                const keyFrame = (frameCount % KEYFRAME_EVERY === 0);
+                try { encoder.encode(frame, { keyFrame }); } catch(e) { log_always('encode err:', e); }
+                frame.close();
+                frameCount++;
+            }
+        })();
+    }
+}
+
+cameraSelect.onchange = () => {
+    selectedCameraId = cameraSelect.value;
+    switchCamera(selectedCameraId);
+};
+
 // -- state --------------------------------------------------------------------
 let camStream    = null;
 let encoder      = null;
@@ -413,16 +517,24 @@ document.addEventListener('click', () => ensureAudioCtx().catch(() => {}), { onc
 async function startCameraAndMic() {
     await ensureAudioCtx();
     if (!camStream) {
+        const vidConstraint = { width:{max:640}, height:{max:640}, frameRate:{ideal:24,max:30} };
+        if (selectedCameraId) vidConstraint.deviceId = { exact: selectedCameraId };
         try {
             camStream = await navigator.mediaDevices.getUserMedia({
-                video: { width:{ max:640 }, height:{ max:640 }, frameRate:{ ideal:24, max:30 } },
+                video: vidConstraint,
                 audio: { channelCount:1, sampleRate:48000,
                          echoCancellation:echoCancel, noiseSuppression:noiseSuppress, autoGainControl:autoGain }
             });
         } catch(e) { log_always('getUserMedia failed:', e.message || e); return false; }
 
+        await populateCameras();
         localVideo.srcObject = camStream;
         const vt = camStream.getVideoTracks()[0];
+        selectedCameraId = vt.getSettings().deviceId || selectedCameraId;
+        if (cameraSelect.options.length) {
+            for (const opt of cameraSelect.options) { if (opt.value === selectedCameraId) { opt.selected = true; break; } }
+        }
+        checkZoom(vt);
         const s  = vt.getSettings();
         let encW = s.width  || 320;
         let encH = s.height || 240;
@@ -468,11 +580,13 @@ async function startCameraAndMic() {
         if (encoder) {
             const proc = new MediaStreamTrackProcessor({ track: vt });
             frameReader = proc.readable.getReader();
+            const myReader = frameReader;
             (async () => {
                 while (true) {
                     let r;
-                    try { r = await frameReader.read(); } catch { break; }
+                    try { r = await myReader.read(); } catch { break; }
                     if (r.done) break;
+                    if (myReader !== frameReader) { r.value?.close(); break; }
                     const frame = r.value;
                     if (videoMuted) { frame.close(); continue; }
                     // reconfigure if phone rotated
