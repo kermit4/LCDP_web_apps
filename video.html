@@ -345,7 +345,7 @@ let frameCount   = 0;
 let videoMuted   = true;
 let micActive    = false;
 let videoSeqSent = Date.now(); // start high so post-reload seqs aren't rejected as stale
-let videoSeqRecv = 0;
+let videoSeqLastDisplayed = 0;
 
 // -- audio state --------------------------------------------------------------
 let echoCancel    = true;
@@ -365,7 +365,7 @@ let lastSample      = 0;
 let videoDrops = 0, lastVideoDropMs = null, hasFirstVideo = false;
 let audioDrops = 0, lastAudioDropMs = null, hasFirstAudio = false;
 let videoGapStart = null, audioGapStart = null; // when we first noticed the current gap
-let videoDelayMs = 0;
+const videoDelayMs = () => Math.round(audioBufTarget / AUDIO_RATE * 1000);
 const videoQueue = [];
 const videoPending = new Map(); // seq -> {vf, arrivedAt} -- pre-decode reorder buffer
 const audioPending = new Map(); // offset -> {af, arrivedAt} -- pre-decode reorder buffer
@@ -385,6 +385,7 @@ const pendingAudioPings = new Map();
 const pendingVideoPings = new Map();
 let audioFramesSent = 0, videoFramesSent = 0;
 let lastAudioRtt = null, lastRemoteBuf = null;
+let lastArrivalMs = null, lastArrivalOffset = null;
 
 const BPS_WINDOW_MS = 5000;
 const keyframeBits   = []; // {t, bytes} -- raw VP8 bytes, keyframes
@@ -439,7 +440,7 @@ function makeDecoder(w, h) {
                 fitEl(remoteCanvas, frame.displayWidth, frame.displayHeight);
             }
             createImageBitmap(frame).then(bm => {
-                videoQueue.push({ bm, due: Date.now() + videoDelayMs });
+                videoQueue.push({ bm, due: Date.now() + videoDelayMs() });
             });
             frame.close();
             needKeyframe = false;
@@ -468,14 +469,15 @@ async function ensureAudioCtx() {
         // Without this, audio resumes immediately on the first decoded packet and
         // starves again instantly, causing the target to climb without bound.
         if (holdForFill) {
-            if (depth >= audioBufTarget) {
+            // Require one extra callback's worth of slack beyond target so the first
+            // playback callback doesn't immediately drain the ring and re-underrun.
+            if (depth >= audioBufTarget + SP_FRAMES) {
                 holdForFill = false;
                 inUnderrun = false;
             } else {
                 out.fill(0);
                 setLed(rxLed, false);
                 audioBufTarget = Math.max(MIN_BUF, audioBufTarget - 4);
-                videoDelayMs = Math.round(audioBufTarget / AUDIO_RATE * 1000);
                 return;
             }
         }
@@ -508,6 +510,10 @@ async function ensureAudioCtx() {
         videoDelayMs = Math.round(audioBufTarget / AUDIO_RATE * 1000);
     };
     playProc.connect(audioCtx.destination);
+    const keepAlive = audioCtx.createConstantSource();
+    keepAlive.offset.value = 1e-10; // non-zero so Chrome doesn't quiesce the audio graph
+    keepAlive.connect(playProc);
+    keepAlive.start();
     log_always('audio playback ready');
 }
 // auto-start playback on any first user interaction
@@ -745,7 +751,7 @@ function decodeVideoFrame(vf) {
     try {
         decoder.decode(new EncodedVideoChunk({
             type: vf.keyframe ? 'key' : 'delta',
-            timestamp: videoSeqRecv,
+            timestamp: videoSeqLastDisplayed,
             data: b64ToU8(vf.data)
         }));
     } catch(e) { log_always('video decode err:', e.message || e); needKeyframe = true; }
@@ -756,14 +762,14 @@ function drainVideoPending() {
         if (!hasFirstVideo) {
             if (videoPending.size === 0) return;
             // bootstrap: accept whatever seq arrives first
-            videoSeqRecv = Math.min(...videoPending.keys()) - 1;
+            videoSeqLastDisplayed = Math.min(...videoPending.keys()) - 1;
             hasFirstVideo = true;
         }
-        const next = videoSeqRecv + 1;
+        const next = videoSeqLastDisplayed + 1;
         if (videoPending.has(next)) {
             const { vf } = videoPending.get(next);
             videoPending.delete(next);
-            videoSeqRecv = next;
+            videoSeqLastDisplayed = next;
             videoGapStart = null; // gap resolved
             decodeVideoFrame(vf);
             continue;
@@ -771,14 +777,14 @@ function drainVideoPending() {
         if (videoPending.size === 0) return;
         // gap: record when we first noticed it, wait up to videoDelayMs before skipping
         if (videoGapStart === null) videoGapStart = Date.now();
-        if (Date.now() - videoGapStart < videoDelayMs) return;
+        if (Date.now() - videoGapStart < videoDelayMs()) return;
         videoGapStart = null;
         // gap expired: count truly missing frames as drops and skip
         let minSeq = Infinity;
         for (const seq of videoPending.keys()) if (seq < minSeq) minSeq = seq;
         const skipped = minSeq - next;
         if (skipped > 0) { videoDrops += skipped; lastVideoDropMs = Date.now(); }
-        videoSeqRecv = minSeq - 1;
+        videoSeqLastDisplayed = minSeq - 1;
         needKeyframe = true;
         // loop continues: picks up minSeq on next iteration
     }
@@ -811,7 +817,7 @@ function drainAudioPending() {
         if (audioPending.size === 0) return;
         // gap: record when we first noticed it, wait up to videoDelayMs before skipping
         if (audioGapStart === null) audioGapStart = Date.now();
-        if (Date.now() - audioGapStart < videoDelayMs) return;
+        if (Date.now() - audioGapStart < videoDelayMs()) return;
         audioGapStart = null;
         // gap expired: count drops and skip (ring buffer will have silence for the gap)
         let minOffset = Infinity;
@@ -872,20 +878,19 @@ function connect() {
                         const vf = msg.VideoFrame;
                         if (vf.codec !== 'vp8') continue;
                         if (vf.seq !== undefined) {
-                            if (vf.seq <= videoSeqRecv) continue; // stale
-                            if (!videoPending.has(vf.seq))
-                                videoPending.set(vf.seq, { vf });
+                            if (vf.seq <= videoSeqLastDisplayed) continue; // stale
+                            videoPending.set(vf.seq, { vf });
                         } else {
                             decodeVideoFrame(vf); // no seq: decode directly
                         }
                         drainVideoPending();
                     }
                     if (forwarded && 'AudioFrame' in msg) {
+                        ensureAudioCtx().catch(() => {});
                         const af = msg.AudioFrame;
                         if (af.format === 'opus' && af.sampleRate === 48000 && af.channels === 1
                                 && af.offset > offset_received) {
-                            if (!audioPending.has(af.offset))
-                                audioPending.set(af.offset, { af });
+                            audioPending.set(af.offset, { af });
                             drainAudioPending();
                         }
                     }
@@ -901,7 +906,7 @@ function connect() {
                     if (forwarded && 'AudioPing' in msg) {
                         if (socket.readyState === WebSocket.OPEN)
                             socket.send(JSON.stringify([{Forward:{to_ed25519:src,
-                                messages:[{AudioPong:{seq:msg.AudioPing.seq,t:msg.AudioPing.t,buf:videoDelayMs}}]}}]));
+                                messages:[{AudioPong:{seq:msg.AudioPing.seq,t:msg.AudioPing.t,buf:videoDelayMs()}}]}}]));
                     }
                     if (forwarded && 'AudioPong' in msg) {
                         const rtt = Date.now() - msg.AudioPong.t;
@@ -996,7 +1001,7 @@ setInterval(() => {
     const est1way = (lastAudioRtt !== null && lastRemoteBuf !== null)
         ? Math.round(lastAudioRtt / 2 + lastRemoteBuf)+'ms' : '--';
     const estTotal = (lastAudioRtt !== null && lastRemoteBuf !== null)
-        ? Math.round(lastAudioRtt / 2 + lastRemoteBuf + videoDelayMs)+'ms' : '--';
+        ? Math.round(lastAudioRtt / 2 + lastRemoteBuf + videoDelayMs())+'ms' : '--';
     const bpsFloor = now - BPS_WINDOW_MS;
     while (keyframeBits.length   && keyframeBits[0].t   < bpsFloor) keyframeBits.shift();
     while (deltaframeBits.length && deltaframeBits[0].t < bpsFloor) deltaframeBits.shift();
@@ -1004,7 +1009,7 @@ setInterval(() => {
     const deltaBps = Math.round(deltaframeBits.reduce((s, x) => s + x.bytes, 0) * 8 / (BPS_WINDOW_MS / 1000));
     const fmtBps = n => n >= 1000 ? (n/1000).toFixed(1)+'kbps' : n+'bps';
     statsEl.innerHTML =
-        `send: ${sr}  recv: ${rr}  ${tipHtml('buf target', TIP_BUF)}: ${videoDelayMs}ms  ${tipHtml('ring', TIP_RING)}: ${Math.round(ringDepth/AUDIO_RATE*1000)}ms\n` +
+        `send: ${sr}  recv: ${rr}  ${tipHtml('buf target', TIP_BUF)}: ${videoDelayMs()}ms  ${tipHtml('ring', TIP_RING)}: ${Math.round(ringDepth/AUDIO_RATE*1000)}ms\n` +
         `net RTT: ${rttStr}  remote buf: ${remoteBufStr}  est 1-way: ${est1way}  est total: ${estTotal}\n` +
         `video key: ${fmtBps(keyBps)}  delta: ${fmtBps(deltaBps)}  (5s avg, raw VP8)\n` +
         `video loss: ${videoDrops}  last: ${ago(lastVideoDropMs)}\n` +
