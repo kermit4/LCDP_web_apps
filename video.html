@@ -67,7 +67,7 @@ their ed25519: <input id=their_ed25519 size=80>
 </div>
 <div style="display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;">
   <label for=maxBufSlider>Max buf:</label>
-  <input type=range id=maxBufSlider min=50 max=2000 step=25 value=500 style="width:160px">
+  <input type=range id=maxBufSlider min=50 max=650 step=25 value=500 style="width:160px">
   <span id=maxBufVal>500ms</span>
 </div>
 <pre id=stats style="font-size:11px;margin:4px 0;"></pre>
@@ -260,6 +260,7 @@ let lastSample      = 0;
 
 let videoDrops = 0, lastVideoDropMs = null, hasFirstVideo = false;
 let audioDrops = 0, lastAudioDropMs = null, hasFirstAudio = false;
+let videoGapStart = null, audioGapStart = null; // when we first noticed the current gap
 let videoDelayMs = 0;
 const videoQueue = [];
 const videoPending = new Map(); // seq -> {vf, arrivedAt} -- pre-decode reorder buffer
@@ -649,18 +650,18 @@ function drainVideoPending() {
             const { vf } = videoPending.get(next);
             videoPending.delete(next);
             videoSeqRecv = next;
+            videoGapStart = null; // gap resolved
             decodeVideoFrame(vf);
             continue;
         }
         if (videoPending.size === 0) return;
-        // gap: wait up to videoDelayMs -- the existing adaptive display buffer is exactly the slack we have
-        const reorderMs = videoDelayMs;
-        let minSeq = Infinity, oldestArrival = Infinity;
-        for (const [seq, { arrivedAt }] of videoPending) {
-            if (arrivedAt < oldestArrival) { oldestArrival = arrivedAt; minSeq = seq; }
-        }
-        if (Date.now() - oldestArrival < reorderMs) return; // still within window
+        // gap: record when we first noticed it, wait up to videoDelayMs before skipping
+        if (videoGapStart === null) videoGapStart = Date.now();
+        if (Date.now() - videoGapStart < videoDelayMs) return;
+        videoGapStart = null;
         // gap expired: count truly missing frames as drops and skip
+        let minSeq = Infinity;
+        for (const seq of videoPending.keys()) if (seq < minSeq) minSeq = seq;
         const skipped = minSeq - next;
         if (skipped > 0) { videoDrops += skipped; lastVideoDropMs = Date.now(); }
         videoSeqRecv = minSeq - 1;
@@ -682,6 +683,7 @@ function drainAudioPending() {
             const { af } = audioPending.get(next);
             audioPending.delete(next);
             offset_received = next;
+            audioGapStart = null; // gap resolved
             if (audioDecoder && audioDecoder.state === 'configured') {
                 try {
                     audioDecoder.decode(new EncodedAudioChunk({
@@ -693,13 +695,13 @@ function drainAudioPending() {
             continue;
         }
         if (audioPending.size === 0) return;
-        // gap: wait up to videoDelayMs -- same adaptive buffer depth drives both
-        let minOffset = Infinity, oldestArrival = Infinity;
-        for (const [offset, { arrivedAt }] of audioPending) {
-            if (arrivedAt < oldestArrival) { oldestArrival = arrivedAt; minOffset = offset; }
-        }
-        if (Date.now() - oldestArrival < videoDelayMs) return; // still within window
+        // gap: record when we first noticed it, wait up to videoDelayMs before skipping
+        if (audioGapStart === null) audioGapStart = Date.now();
+        if (Date.now() - audioGapStart < videoDelayMs) return;
+        audioGapStart = null;
         // gap expired: count drops and skip (ring buffer will have silence for the gap)
+        let minOffset = Infinity;
+        for (const offset of audioPending.keys()) if (offset < minOffset) minOffset = offset;
         const skipped = minOffset - next;
         if (skipped > 0) { audioDrops += skipped; lastAudioDropMs = Date.now(); }
         offset_received = minOffset - 1;
@@ -758,7 +760,7 @@ function connect() {
                         if (vf.seq !== undefined) {
                             if (vf.seq <= videoSeqRecv) continue; // stale
                             if (!videoPending.has(vf.seq))
-                                videoPending.set(vf.seq, { vf, arrivedAt: Date.now() });
+                                videoPending.set(vf.seq, { vf });
                         } else {
                             decodeVideoFrame(vf); // no seq: decode directly
                         }
@@ -769,7 +771,7 @@ function connect() {
                         if (af.format === 'opus' && af.sampleRate === 48000 && af.channels === 1
                                 && af.offset > offset_received) {
                             if (!audioPending.has(af.offset))
-                                audioPending.set(af.offset, { af, arrivedAt: Date.now() });
+                                audioPending.set(af.offset, { af });
                             drainAudioPending();
                         }
                     }
@@ -816,7 +818,7 @@ function connect() {
 const statsEl = document.getElementById('stats');
 (function renderLoop() {
     const now = Date.now();
-    while (videoQueue.length && videoQueue[0].due <= now) {
+    while (!holdForFill && videoQueue.length && videoQueue[0].due <= now) {
         const { bm } = videoQueue.shift();
         if (lastVideoFrame) lastVideoFrame.close();
         lastVideoFrame = bm;
