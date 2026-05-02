@@ -133,16 +133,67 @@ let micSrc           = null;
 let vuRafId          = null;
 
 // -- recording state ----------------------------------------------------------
+// Chunks go to IndexedDB as they arrive; chunkMeta (byte offsets) is kept in
+// memory for fast range lookups.  Falls back to plain ArrayBuffer[] in memory
+// if IDB is unavailable (still works fine for shorter recordings).
+let db                  = null;  // IDB handle; null = memory fallback
+let chunkMeta           = [];    // [{start,end}] updated synchronously per chunk
+let chunks              = {};    // memory fallback keyed by chunk index
+let totalRecordedBytes  = 0;
+let pendingWrites       = 0;     // IDB writes still in flight
+let recordingDone       = false;
+let allWritesDoneResolve = null;
 let mediaRecorder  = null;
-let recordedChunks = [];   // Blob array while recording
-let recordedBuffer = null; // ArrayBuffer after stop
-// Note: recordedBuffer lives in the JS heap (no hard spec limit, but browsers
-// typically cap a single ArrayBuffer at ~2 GB and total heap at 1-4 GB depending
-// on system RAM).  For very long recordings use IndexedDB instead: store each
-// ondataavailable chunk there, then read sequentially when serving Content blocks.
+let recMimeType    = '';
 let recordingUUID  = null;
 let servedBlocks   = 0;
 let totalRequests  = 0;
+
+// -- IndexedDB ----------------------------------------------------------------
+const IDB_NAME  = 'cjp2p_video_record';
+const IDB_STORE = 'chunks';
+
+function idbOpen() {
+    return new Promise((res, rej) => {
+        const r = indexedDB.open(IDB_NAME, 1);
+        r.onupgradeneeded = e => e.target.result.createObjectStore(IDB_STORE);
+        r.onsuccess = e => res(e.target.result);
+        r.onerror   = e => rej(e.target.error);
+    });
+}
+function idbPut(key, buf) {
+    return new Promise((res, rej) => {
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).put(buf, key);
+        tx.oncomplete = res;
+        tx.onerror    = e => rej(e.target.error);
+    });
+}
+function idbGet(key) {
+    return new Promise((res, rej) => {
+        const tx = db.transaction(IDB_STORE, 'readonly');
+        const r  = tx.objectStore(IDB_STORE).get(key);
+        r.onsuccess = e => res(e.target.result);
+        r.onerror   = e => rej(e.target.error);
+    });
+}
+function idbClear() {
+    return new Promise((res, rej) => {
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).clear();
+        tx.oncomplete = res;
+        tx.onerror    = e => rej(e.target.error);
+    });
+}
+
+(async () => {
+    try {
+        db = await idbOpen();
+        log_always('IndexedDB ready');
+    } catch(e) {
+        log_always('IndexedDB unavailable, using memory:', e.message || e);
+    }
+})();
 
 // -- UUID ---------------------------------------------------------------------
 function genUUID() {
@@ -319,8 +370,9 @@ muteVideoBtn.onclick = async () => {
 
 // -- recording controls -------------------------------------------------------
 function setRecordingButtons(recording) {
-    startBtn.disabled    = recording;
-    stopBtn.disabled     = !recording;
+    startBtn.disabled      = recording;
+    stopBtn.disabled       = !recording;
+    cameraSelect.disabled  = recording;
     // audio setting changes mid-recording risk breaking the MediaRecorder stream
     echoCancelBtn.disabled = recording;
     noiseBtn.disabled      = recording;
@@ -331,12 +383,38 @@ startBtn.onclick = async () => {
     const ok = await startCameraAndMic();
     if (!ok) return;
 
-    recordingUUID  = genUUID();
-    recordedChunks = [];
-    recordedBuffer = null;
-    servedBlocks   = 0;
-    totalRequests  = 0;
-    urlBox.hidden  = true;
+    // reset recording state; clear previous IDB data
+    chunkMeta            = [];
+    chunks               = {};
+    totalRecordedBytes   = 0;
+    recordingDone        = false;
+    pendingWrites        = 0;
+    allWritesDoneResolve = null;
+    servedBlocks         = 0;
+    totalRequests        = 0;
+    urlBox.hidden        = true;
+    if (db) await idbClear().catch(e => log_always('idb clear err:', e));
+
+    // Request persistent storage and log free quota before the first chunk
+    // arrives.  persist() is the only call that may show a browser prompt
+    // (Firefox only, Chrome silently decides) — resolved here, before recording,
+    // so it never interrupts an in-progress take.
+    if (db && navigator.storage) {
+        if (navigator.storage.persist) {
+            const granted = await navigator.storage.persist().catch(() => false);
+            if (!granted) log_always('persistent storage not granted — browser may evict IDB under disk pressure');
+        }
+        if (navigator.storage.estimate) {
+            const { usage, quota } = await navigator.storage.estimate().catch(() => ({}));
+            if (quota) {
+                const freeMB = ((quota - usage) / 1024 / 1024).toFixed(0);
+                const quotaMB = (quota / 1024 / 1024).toFixed(0);
+                log_always(`storage: ~${freeMB} MB free of ${quotaMB} MB quota`);
+            }
+        }
+    }
+
+    recordingUUID = genUUID();
 
     const mimeType = ['video/webm;codecs=vp8,opus',
                       'video/webm;codecs=vp9,opus',
@@ -346,28 +424,59 @@ startBtn.onclick = async () => {
     try {
         mediaRecorder = new MediaRecorder(camStream, mimeType ? {mimeType} : {});
     } catch(e) { log_always('MediaRecorder init failed:', e.message || e); return; }
+    recMimeType = mediaRecorder.mimeType;
 
     mediaRecorder.ondataavailable = e => {
-        if (e.data && e.data.size > 0) {
-            recordedChunks.push(e.data);
-            const total = recordedChunks.reduce((s,c) => s + c.size, 0);
-            sizeInfo.textContent = `recording: ${(total/1024/1024).toFixed(1)} MB`;
-        }
+        if (!e.data || e.data.size === 0) return;
+        // Update metadata synchronously to preserve chunk ordering
+        const idx   = chunkMeta.length;
+        const start = totalRecordedBytes;
+        totalRecordedBytes += e.data.size;
+        chunkMeta.push({ start, end: totalRecordedBytes });
+        sizeInfo.textContent = `recording: ${(totalRecordedBytes/1024/1024).toFixed(1)} MB`;
+        // Write data asynchronously to IDB or memory fallback
+        pendingWrites++;
+        e.data.arrayBuffer().then(async buf => {
+            if (db) {
+                try { await idbPut(idx, buf); }
+                catch(err) {
+                    // IDB write failed (quota exceeded etc.) — fall back to memory
+                    // for this chunk and all subsequent ones so state stays consistent
+                    log_always('IDB write failed, switching to memory fallback:', err.message || err);
+                    db = null;
+                    chunks[idx] = buf;
+                }
+            } else {
+                chunks[idx] = buf;
+            }
+        }).catch(err => {
+            log_always('arrayBuffer() failed:', err);
+        }).finally(() => {
+            pendingWrites--;
+            if (recordingDone && pendingWrites === 0 && allWritesDoneResolve) {
+                allWritesDoneResolve();
+                allWritesDoneResolve = null;
+            }
+        });
     };
 
     mediaRecorder.onstop = async () => {
         setLed(recLed, false);
-        log_always('assembling recording...');
-        const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'video/webm' });
-        recordedBuffer = await blob.arrayBuffer();
-        const mb = (recordedBuffer.byteLength / 1024 / 1024).toFixed(2);
-        sizeInfo.textContent = `done: ${mb} MB  codec: ${mediaRecorder.mimeType}`;
+        recordingDone = true;
+        if (pendingWrites > 0) {
+            log_always('flushing writes...');
+            await new Promise(res => { allWritesDoneResolve = res; });
+        }
+        const mb = (totalRecordedBytes / 1024 / 1024).toFixed(2);
+        const storageLabel = db ? 'IDB' : (Object.keys(chunks).length ? 'memory' : 'IDB+memory');
+        sizeInfo.textContent = `done: ${mb} MB  codec: ${recMimeType}  ${storageLabel}`;
         const url = wsToHttpBase(ws_url_input.value) + '/' + recordingUUID;
         recUrl.href = url;
         recUrl.textContent = url;
         urlBox.hidden = false;
         setRecordingButtons(false);
-        log_always('published UUID:', recordingUUID, 'size:', recordedBuffer.byteLength, 'bytes');
+        log_always('published UUID:', recordingUUID, 'size:', totalRecordedBytes, 'bytes',
+                   db ? '(IndexedDB)' : '(memory)');
         updateServedInfo();
     };
 
@@ -382,9 +491,9 @@ stopBtn.onclick = () => {
 };
 
 function updateServedInfo() {
-    if (!recordedBuffer) return;
+    if (!totalRecordedBytes) return;
     servedInfo.textContent =
-        `served ${servedBlocks} blocks to ${totalRequests} requests  (${recordedBuffer.byteLength} bytes total)`;
+        `served ${servedBlocks} blocks to ${totalRequests} requests  (${totalRecordedBytes} bytes total)`;
 }
 
 // -- content serving ----------------------------------------------------------
@@ -394,15 +503,34 @@ function updateServedInfo() {
 // directly back to that peer's UDP address.
 const BLOCK_SIZE = 4096; // must match server BLOCK_SIZE! macro (0x1000)
 
-function replyContent(req, replyTo) {
-    if (!recordedBuffer) { log('PleaseSendContent but recording not ready'); return; }
+async function readBytes(offset, length) {
+    const end    = offset + length;
+    const result = new Uint8Array(length);
+    let   filled = 0;
+    for (let i = 0; i < chunkMeta.length; i++) {
+        const cm = chunkMeta[i];
+        if (cm.end   <= offset) continue;
+        if (cm.start >= end)    break;
+        const buf  = db ? await idbGet(i) : chunks[i];
+        if (!buf) { log_always(`chunk ${i} missing`); continue; }
+        const from = Math.max(cm.start, offset) - cm.start;
+        const len  = Math.min(cm.end, end) - Math.max(cm.start, offset);
+        result.set(new Uint8Array(buf, from, len), filled);
+        filled += len;
+    }
+    return filled > 0 ? result.subarray(0, filled) : null;
+}
+
+async function replyContent(req, replyTo) {
+    if (!recordingDone || pendingWrites > 0) { log('recording not ready yet'); return; }
     if (req.id !== recordingUUID) { log('PleaseSendContent for unknown id:', req.id); return; }
     totalRequests++;
-    const totalSize = recordedBuffer.byteLength;
+    const totalSize = totalRecordedBytes;
     const offset    = req.offset || 0;
     if (offset >= totalSize) { log('PleaseSendContent offset past EOF'); return; }
     const length = Math.min(req.length || BLOCK_SIZE, totalSize - offset);
-    const chunk  = new Uint8Array(recordedBuffer, offset, length);
+    const chunk  = await readBytes(offset, length);
+    if (!chunk) { log_always('readBytes null at offset', offset); return; }
     if (socket && socket.readyState === WebSocket.OPEN) {
         const content = { Content: {
             id:     req.id,
@@ -458,10 +586,10 @@ function connect() {
 }
 
 setInterval(() => {
-    const mb = recordedBuffer ? (recordedBuffer.byteLength / 1024 / 1024).toFixed(2) + ' MB' : '--';
-    statsEl.textContent = recordingUUID
-        ? `id: ${recordingUUID}\nsize: ${mb}  served blocks: ${servedBlocks}  requests: ${totalRequests}`
-        : '';
+    if (!recordingUUID) { statsEl.textContent = ''; return; }
+    const mb = (totalRecordedBytes / 1024 / 1024).toFixed(2);
+    statsEl.textContent =
+        `id: ${recordingUUID}\nsize: ${mb} MB  served: ${servedBlocks} blocks  requests: ${totalRequests}`;
 }, 1000);
 
 connect();
