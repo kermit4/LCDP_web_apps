@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html><head><title>CJP2P video record</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+video { display:block; background:#000; }
+.vid-wrap { display:inline-block; position:relative; vertical-align:top; }
+.vid-label { font-size:11px; color:#888; }
+#controls { display:flex; align-items:center; gap:8px; margin:6px 0; }
+.led { width:12px; height:12px; border-radius:50%; border:1px solid #888;
+       background:#600; display:inline-block; flex-shrink:0; }
+.led.on { background:#e00; box-shadow:0 0 5px #e00; animation: blink 1s step-end infinite; }
+@keyframes blink { 50% { opacity:0.4; } }
+#logDiv { font-family:monospace; font-size:11px; white-space:pre-wrap;
+          word-break:break-all; max-height:30vh; overflow:auto; border:1px solid #ccc; padding:4px; }
+#urlBox { margin:8px 0; padding:8px; background:#e8f4e8; border:1px solid #8c8; border-radius:4px; font-family:monospace; }
+</style>
+</head>
+<body>
+ws url: <input id=ws_url size=50>
+<br><a href=/>status page</a>
+<p>
+<div class=vid-wrap>
+  <div class=vid-label>Camera preview</div>
+  <video id=localVideo autoplay muted playsinline style="width:320px;height:240px"></video>
+</div>
+<div id=controls>
+  <span class=led id=recLed title="recording"></span>
+  <button id=startBtn>Start Recording</button>
+  <button id=stopBtn disabled>Stop &amp; Publish</button>
+  <span id=sizeInfo style="font-size:11px;color:#555"></span>
+</div>
+<div id=urlBox hidden>
+  Recording ready -- share this URL:<br>
+  <a id=recUrl href=""></a>
+  <br><small id=servedInfo style="color:#555"></small>
+</div>
+<pre id=stats style="font-size:11px;margin:4px 0;"></pre>
+<button id=debugBtn>debug log</button>
+<div id=logDiv></div>
+
+<script>
+const localVideo   = document.getElementById('localVideo');
+const recLed       = document.getElementById('recLed');
+const startBtn     = document.getElementById('startBtn');
+const stopBtn      = document.getElementById('stopBtn');
+const sizeInfo     = document.getElementById('sizeInfo');
+const recUrl       = document.getElementById('recUrl');
+const urlBox       = document.getElementById('urlBox');
+const servedInfo   = document.getElementById('servedInfo');
+const statsEl      = document.getElementById('stats');
+const logDiv       = document.getElementById('logDiv');
+const ws_url_input = document.getElementById('ws_url');
+ws_url_input.value = 'ws://localhost:24255/wt';
+ws_url_input.onchange = () => { if (socket) socket.close(); };
+
+// -- logging ------------------------------------------------------------------
+let logging = false;
+document.getElementById('debugBtn').onclick = () => { logging = !logging; };
+function log_always(...a) {
+    const d = document.createElement('div');
+    d.textContent = `[${new Date().toLocaleTimeString()}] ${a.join(' ')}`;
+    logDiv.appendChild(d);
+    while (logDiv.children.length > 500) logDiv.removeChild(logDiv.firstChild);
+    logDiv.scrollTop = logDiv.scrollHeight;
+}
+function log(...a) { if (logging) log_always(...a); }
+window.onerror = (m,u,l,c,e) => { log_always('ERROR:',m,'@',l+':'+c); return false; };
+window.onunhandledrejection = e => log_always('UNHANDLED:', e.reason?.stack || e.reason || e);
+
+// -- base64 -------------------------------------------------------------------
+function u8toB64(u8) {
+    let s = ''; const C = 0x8000;
+    for (let i = 0; i < u8.length; i += C) s += String.fromCharCode.apply(null, u8.subarray(i, i+C));
+    return btoa(s);
+}
+
+// -- LED ----------------------------------------------------------------------
+function setLed(el, on) { el.classList.toggle('on', on); }
+
+// -- recording state ----------------------------------------------------------
+let camStream      = null;
+let mediaRecorder  = null;
+let recordedChunks = [];   // Blob array while recording
+let recordedBuffer = null; // ArrayBuffer after stop; IndexedDB alternative for >~500MB
+let recordingUUID  = null;
+let servedBlocks   = 0;
+let totalRequests  = 0;
+
+// -- UUID ---------------------------------------------------------------------
+function genUUID() {
+    if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+    // fallback for older browsers
+    return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+        (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c/4)))).toString(16));
+}
+
+// -- URL helper ---------------------------------------------------------------
+function wsToHttpBase(wsUrl) {
+    // ws://localhost:24255/wt  ->  http://localhost:24255
+    return wsUrl.replace(/^ws(s?)/, 'http$1').replace(/\/wt.*$/, '');
+}
+
+// -- recording controls -------------------------------------------------------
+startBtn.onclick = async () => {
+    if (!camStream) {
+        try {
+            camStream = await navigator.mediaDevices.getUserMedia({
+                video: { width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30,max:30} },
+                audio: true
+            });
+        } catch(e) { log_always('getUserMedia failed:', e.message || e); return; }
+        localVideo.srcObject = camStream;
+    }
+    recordingUUID  = genUUID();
+    recordedChunks = [];
+    recordedBuffer = null;
+    servedBlocks   = 0;
+    totalRequests  = 0;
+    urlBox.hidden  = true;
+
+    // prefer VP8+Opus for broad compatibility; browser decides if not supported
+    const mimeType = ['video/webm;codecs=vp8,opus',
+                      'video/webm;codecs=vp9,opus',
+                      'video/webm']
+        .find(t => MediaRecorder.isTypeSupported(t)) || '';
+
+    try {
+        mediaRecorder = new MediaRecorder(camStream, mimeType ? {mimeType} : {});
+    } catch(e) { log_always('MediaRecorder init failed:', e.message || e); return; }
+
+    mediaRecorder.ondataavailable = e => {
+        if (e.data && e.data.size > 0) {
+            recordedChunks.push(e.data);
+            const total = recordedChunks.reduce((s,c) => s + c.size, 0);
+            sizeInfo.textContent = `recording: ${(total/1024/1024).toFixed(1)} MB`;
+        }
+    };
+
+    mediaRecorder.onstop = async () => {
+        setLed(recLed, false);
+        log_always('assembling recording...');
+        const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'video/webm' });
+        recordedBuffer = await blob.arrayBuffer();
+        const mb = (recordedBuffer.byteLength / 1024 / 1024).toFixed(2);
+        sizeInfo.textContent = `done: ${mb} MB  codec: ${mediaRecorder.mimeType}`;
+        const url = wsToHttpBase(ws_url_input.value) + '/' + recordingUUID;
+        recUrl.href = url;
+        recUrl.textContent = url;
+        urlBox.hidden = false;
+        log_always('published UUID:', recordingUUID, 'size:', recordedBuffer.byteLength, 'bytes');
+        updateServedInfo();
+    };
+
+    mediaRecorder.start(1000); // collect a chunk every second
+    setLed(recLed, true);
+    startBtn.disabled = true;
+    stopBtn.disabled  = false;
+    log_always('recording started  UUID:', recordingUUID, '  codec:', mimeType || '(browser default)');
+};
+
+stopBtn.onclick = () => {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+        stopBtn.disabled  = true;
+        startBtn.disabled = false;
+    }
+};
+
+function updateServedInfo() {
+    if (!recordedBuffer) return;
+    servedInfo.textContent =
+        `served ${servedBlocks} blocks to ${totalRequests} requests  (${recordedBuffer.byteLength} bytes total)`;
+}
+
+// -- content serving ----------------------------------------------------------
+// When a remote peer sends PleaseSendContent the server wraps it in a Forwarded
+// packet (including the peer's src IP:port) and delivers it to all WebSocket
+// clients.  We reply via Forward{src} so the server sends our Content block
+// directly back to that peer's UDP address.
+const BLOCK_SIZE = 4096; // must match server BLOCK_SIZE! macro (0x1000)
+
+function replyContent(req, replyTo) {
+    if (!recordedBuffer) { log('PleaseSendContent but recording not ready'); return; }
+    if (req.id !== recordingUUID) { log('PleaseSendContent for unknown id:', req.id); return; }
+    totalRequests++;
+    const totalSize = recordedBuffer.byteLength;
+    const offset    = req.offset || 0;
+    if (offset >= totalSize) { log('PleaseSendContent offset past EOF'); return; }
+    const length = Math.min(req.length || BLOCK_SIZE, totalSize - offset);
+    const chunk  = new Uint8Array(recordedBuffer, offset, length);
+    if (socket && socket.readyState === WebSocket.OPEN) {
+        const content = { Content: {
+            id:     req.id,
+            offset: offset,
+            base64: u8toB64(chunk),
+            eof:    totalSize
+        }};
+        // replyTo is the src SocketAddr string from the Forwarded wrapper.
+        // Forward{src} tells the server to send the Content UDP packet directly
+        // back to that address, bypassing ed25519 lookup.
+        const wire = replyTo
+            ? [{ Forward: { src: replyTo, messages: [content] } }]
+            : [content];
+        socket.send(JSON.stringify(wire));
+        servedBlocks++;
+        log(`-> Content src=${replyTo} off=${offset} len=${length}/${totalSize}`);
+        updateServedInfo();
+    }
+}
+
+// -- WebSocket ----------------------------------------------------------------
+let socket;
+let my_ed25519 = null;
+
+function connect() {
+    log_always('ws connecting');
+    socket = new WebSocket(ws_url_input.value);
+    socket.onclose = () => { log_always('ws closed, reconnecting'); setTimeout(connect, 200); };
+    socket.onopen  = () => log_always('ws connected');
+    socket.onmessage = event => {
+        let outer;
+        try { outer = JSON.parse(event.data); } catch(e) { log_always('parse err', e); return; }
+        for (const msg of outer) {
+            log(JSON.stringify(msg).slice(0, 120));
+            if ('YourEd25519' in msg) {
+                my_ed25519 = msg.YourEd25519.ed25519;
+                log_always('identity:', my_ed25519.slice(0,16)+'...');
+            }
+            if ('PleaseSignYourPub' in msg) {
+                my_ed25519 = msg.PleaseSignYourPub.ed25519;
+            }
+            // PleaseSendContent arriving from a network peer, forwarded by the server.
+            // src tells us who to reply to.
+            if ('Forwarded' in msg) {
+                const fwd = msg.Forwarded;
+                let inner;
+                try { inner = JSON.parse(fwd.messages); } catch { continue; }
+                for (const m of inner) {
+                    if ('PleaseSendContent' in m) replyContent(m.PleaseSendContent, fwd.src);
+                }
+            }
+        }
+    };
+}
+
+setInterval(() => {
+    if (!recordedBuffer) return;
+    const mb = (recordedBuffer.byteLength / 1024 / 1024).toFixed(2);
+    statsEl.textContent = `id: ${recordingUUID}\nsize: ${mb} MB  served blocks: ${servedBlocks}  requests: ${totalRequests}`;
+}, 1000);
+
+connect();
+</script>
+</body></html>
