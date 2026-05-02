@@ -5,11 +5,13 @@
 video { display:block; background:#000; }
 .vid-wrap { display:inline-block; position:relative; vertical-align:top; }
 .vid-label { font-size:11px; color:#888; }
-#controls { display:flex; align-items:center; gap:8px; margin:6px 0; }
+#controls { display:flex; align-items:center; gap:8px; margin:6px 0; flex-wrap:wrap; }
 .led { width:12px; height:12px; border-radius:50%; border:1px solid #888;
        background:#600; display:inline-block; flex-shrink:0; }
-.led.on { background:#e00; box-shadow:0 0 5px #e00; animation: blink 1s step-end infinite; }
+.led.on { background:#e00; box-shadow:0 0 5px #e00; animation:blink 1s step-end infinite; }
 @keyframes blink { 50% { opacity:0.4; } }
+#vuMeter { display:inline-flex; gap:2px; align-items:center; width:90px; flex-shrink:0; }
+.vu-seg { width:5px; height:14px; background:#ddd; border-radius:1px; flex-shrink:0; }
 #logDiv { font-family:monospace; font-size:11px; white-space:pre-wrap;
           word-break:break-all; max-height:30vh; overflow:auto; border:1px solid #ccc; padding:4px; }
 #urlBox { margin:8px 0; padding:8px; background:#e8f4e8; border:1px solid #8c8; border-radius:4px; font-family:monospace; }
@@ -18,6 +20,10 @@ video { display:block; background:#000; }
 <body>
 ws url: <input id=ws_url size=50>
 <br><a href=/>status page</a>
+<div id=cameraRow style="font-size:12px;margin:3px 0;" hidden>
+  camera: <select id=cameraSelect></select>
+  <span id=zoomWrap hidden> &nbsp;zoom: <input type=range id=zoomSlider style="width:100px;vertical-align:middle"></span>
+</div>
 <p>
 <div class=vid-wrap>
   <div class=vid-label>Camera preview</div>
@@ -25,9 +31,17 @@ ws url: <input id=ws_url size=50>
 </div>
 <div id=controls>
   <span class=led id=recLed title="recording"></span>
+  <div id=vuMeter></div>
   <button id=startBtn>Start Recording</button>
   <button id=stopBtn disabled>Stop &amp; Publish</button>
+  <button id=muteAudioBtn disabled>Mute Mic</button>
+  <button id=muteVideoBtn disabled>Mute Video</button>
   <span id=sizeInfo style="font-size:11px;color:#555"></span>
+</div>
+<div style="font-size:12px;margin:3px 0;">
+  <button id=echoCancelBtn>Echo: On</button>
+  <button id=noiseBtn>Noise: Off</button>
+  <button id=gainBtn>Gain: Off</button>
 </div>
 <div id=urlBox hidden>
   Recording ready -- share this URL:<br>
@@ -39,18 +53,27 @@ ws url: <input id=ws_url size=50>
 <div id=logDiv></div>
 
 <script>
-const localVideo   = document.getElementById('localVideo');
-const recLed       = document.getElementById('recLed');
-const startBtn     = document.getElementById('startBtn');
-const stopBtn      = document.getElementById('stopBtn');
-const sizeInfo     = document.getElementById('sizeInfo');
-const recUrl       = document.getElementById('recUrl');
-const urlBox       = document.getElementById('urlBox');
-const servedInfo   = document.getElementById('servedInfo');
-const statsEl      = document.getElementById('stats');
-const logDiv       = document.getElementById('logDiv');
-const ws_url_input = document.getElementById('ws_url');
-ws_url_input.value = 'ws://localhost:24255/wt';
+const localVideo    = document.getElementById('localVideo');
+const recLed        = document.getElementById('recLed');
+const startBtn      = document.getElementById('startBtn');
+const stopBtn       = document.getElementById('stopBtn');
+const muteAudioBtn  = document.getElementById('muteAudioBtn');
+const muteVideoBtn  = document.getElementById('muteVideoBtn');
+const sizeInfo      = document.getElementById('sizeInfo');
+const recUrl        = document.getElementById('recUrl');
+const urlBox        = document.getElementById('urlBox');
+const servedInfo    = document.getElementById('servedInfo');
+const statsEl       = document.getElementById('stats');
+const logDiv        = document.getElementById('logDiv');
+const ws_url_input  = document.getElementById('ws_url');
+const cameraRow     = document.getElementById('cameraRow');
+const cameraSelect  = document.getElementById('cameraSelect');
+const zoomWrap      = document.getElementById('zoomWrap');
+const zoomSlider    = document.getElementById('zoomSlider');
+const echoCancelBtn = document.getElementById('echoCancelBtn');
+const noiseBtn      = document.getElementById('noiseBtn');
+const gainBtn       = document.getElementById('gainBtn');
+ws_url_input.value  = 'ws://localhost:24255/wt';
 ws_url_input.onchange = () => { if (socket) socket.close(); };
 
 // -- logging ------------------------------------------------------------------
@@ -74,14 +97,49 @@ function u8toB64(u8) {
     return btoa(s);
 }
 
-// -- LED ----------------------------------------------------------------------
+// -- LED + VU meter -----------------------------------------------------------
 function setLed(el, on) { el.classList.toggle('on', on); }
 
+const VU_N = 12;
+const vuSegs = Array.from({length: VU_N}, () => {
+    const s = document.createElement('div');
+    s.className = 'vu-seg';
+    document.getElementById('vuMeter').appendChild(s);
+    return s;
+});
+function setVU(v) {
+    const lit = Math.round(v * VU_N);
+    vuSegs.forEach((s, i) => {
+        s.style.background = i >= lit ? '#ddd'
+            : i < VU_N * 0.6 ? '#0a0'
+            : i < VU_N * 0.85 ? '#aa0' : '#d00';
+    });
+}
+setVU(0);
+
+// -- audio/video state --------------------------------------------------------
+let echoCancel    = true;
+let noiseSuppress = false;
+let autoGain      = false;
+let audioMuted    = false;
+let videoMuted    = false;
+
+// -- camera/stream state ------------------------------------------------------
+let camStream        = null;
+let selectedCameraId = '';
+let audioCtx         = null;
+let analyser         = null;
+let micSrc           = null;
+let vuRafId          = null;
+
 // -- recording state ----------------------------------------------------------
-let camStream      = null;
 let mediaRecorder  = null;
 let recordedChunks = [];   // Blob array while recording
-let recordedBuffer = null; // ArrayBuffer after stop; IndexedDB alternative for >~500MB
+let recordedBuffer = null; // ArrayBuffer after stop
+// Note: recordedBuffer lives in the JS heap (no hard spec limit, but browsers
+// typically cap a single ArrayBuffer at ~2 GB and total heap at 1-4 GB depending
+// on system RAM).  For very long recordings use IndexedDB instead: store each
+// ondataavailable chunk there, then read sequentially when serving Content blocks.
 let recordingUUID  = null;
 let servedBlocks   = 0;
 let totalRequests  = 0;
@@ -89,28 +147,190 @@ let totalRequests  = 0;
 // -- UUID ---------------------------------------------------------------------
 function genUUID() {
     if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
-    // fallback for older browsers
     return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
         (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c/4)))).toString(16));
 }
 
 // -- URL helper ---------------------------------------------------------------
 function wsToHttpBase(wsUrl) {
-    // ws://localhost:24255/wt  ->  http://localhost:24255
     return wsUrl.replace(/^ws(s?)/, 'http$1').replace(/\/wt.*$/, '');
 }
 
-// -- recording controls -------------------------------------------------------
-startBtn.onclick = async () => {
-    if (!camStream) {
-        try {
-            camStream = await navigator.mediaDevices.getUserMedia({
-                video: { width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30,max:30} },
-                audio: true
-            });
-        } catch(e) { log_always('getUserMedia failed:', e.message || e); return; }
-        localVideo.srcObject = camStream;
+// -- VU meter loop (AnalyserNode, no encoding needed) ------------------------
+function startVU() {
+    if (!camStream || audioCtx) return;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+    micSrc   = audioCtx.createMediaStreamSource(camStream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    micSrc.connect(analyser);
+    const buf = new Float32Array(analyser.fftSize);
+    function tick() {
+        vuRafId = requestAnimationFrame(tick);
+        if (audioMuted) { setVU(0); return; }
+        analyser.getFloatTimeDomainData(buf);
+        let rms = 0;
+        for (let i = 0; i < buf.length; i++) rms += buf[i] * buf[i];
+        setVU(Math.min(1, Math.sqrt(rms / buf.length) * 6));
     }
+    tick();
+}
+
+function stopVU() {
+    if (vuRafId) { cancelAnimationFrame(vuRafId); vuRafId = null; }
+    if (analyser) { analyser.disconnect(); analyser = null; }
+    if (micSrc)   { micSrc.disconnect();   micSrc   = null; }
+    if (audioCtx) { audioCtx.close();      audioCtx = null; }
+    setVU(0);
+}
+
+// -- camera helpers -----------------------------------------------------------
+async function populateCameras() {
+    const devices = await navigator.mediaDevices.enumerateDevices().catch(() => []);
+    const cameras = devices.filter(d => d.kind === 'videoinput');
+    if (!cameras.length) return;
+    cameraSelect.innerHTML = '';
+    cameras.forEach((cam, i) => {
+        const opt = document.createElement('option');
+        opt.value = cam.deviceId;
+        opt.textContent = cam.label || `Camera ${i+1}`;
+        if (cam.deviceId === selectedCameraId) opt.selected = true;
+        cameraSelect.appendChild(opt);
+    });
+    if (!selectedCameraId && cameras.length) selectedCameraId = cameras[0].deviceId;
+    cameraRow.hidden = false;
+}
+
+function checkZoom(vt) {
+    if (!vt) return;
+    const caps = vt.getCapabilities ? vt.getCapabilities() : {};
+    if (caps.zoom) {
+        zoomSlider.min   = caps.zoom.min;
+        zoomSlider.max   = caps.zoom.max;
+        zoomSlider.step  = caps.zoom.step || 1;
+        zoomSlider.value = vt.getSettings().zoom ?? caps.zoom.min;
+        zoomWrap.hidden  = false;
+        zoomSlider.oninput = () => {
+            vt.applyConstraints({ advanced: [{ zoom: parseFloat(zoomSlider.value) }] }).catch(() => {});
+        };
+    } else {
+        zoomWrap.hidden = true;
+    }
+}
+
+cameraSelect.onchange = () => switchCamera(cameraSelect.value);
+
+async function switchCamera(deviceId) {
+    if (!camStream) { selectedCameraId = deviceId; return; }
+    camStream.getVideoTracks().forEach(t => { t.stop(); camStream.removeTrack(t); });
+    zoomWrap.hidden = true;
+    let newStream;
+    try {
+        newStream = await navigator.mediaDevices.getUserMedia({
+            video: { deviceId: { exact: deviceId }, width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30,max:30} }
+        });
+    } catch(e) { log_always('switchCamera failed:', e.message || e); return; }
+    const vt = newStream.getVideoTracks()[0];
+    camStream.addTrack(vt);
+    localVideo.srcObject = camStream;
+    checkZoom(vt);
+    vt.enabled = !videoMuted;
+    selectedCameraId = deviceId;
+    log_always('camera switched:', vt.label || deviceId);
+}
+
+// -- start camera + mic -------------------------------------------------------
+async function startCameraAndMic() {
+    if (camStream) return true;
+    const vidConstraint = { width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30,max:30} };
+    if (selectedCameraId) vidConstraint.deviceId = { exact: selectedCameraId };
+    try {
+        camStream = await navigator.mediaDevices.getUserMedia({
+            video: vidConstraint,
+            audio: { channelCount:1, sampleRate:48000,
+                     echoCancellation:echoCancel, noiseSuppression:noiseSuppress, autoGainControl:autoGain }
+        });
+    } catch(e) { log_always('getUserMedia failed:', e.message || e); return false; }
+    localVideo.srcObject = camStream;
+    const vt = camStream.getVideoTracks()[0];
+    selectedCameraId = vt?.getSettings().deviceId || selectedCameraId;
+    checkZoom(vt);
+    await populateCameras();
+    if (cameraSelect.options.length) {
+        for (const opt of cameraSelect.options) { if (opt.value === selectedCameraId) { opt.selected = true; break; } }
+    }
+    muteAudioBtn.disabled = false;
+    muteVideoBtn.disabled = false;
+    startVU();
+    return true;
+}
+
+// -- restart audio (echo/noise/gain changes) ----------------------------------
+async function restartAudio() {
+    if (!camStream) return;
+    stopVU();
+    camStream.getAudioTracks().forEach(t => { t.stop(); camStream.removeTrack(t); });
+    try {
+        const s = await navigator.mediaDevices.getUserMedia({
+            audio: { channelCount:1, sampleRate:48000,
+                     echoCancellation:echoCancel, noiseSuppression:noiseSuppress, autoGainControl:autoGain }
+        });
+        s.getAudioTracks().forEach(t => camStream.addTrack(t));
+    } catch(e) { log_always('audio restart failed:', e.message || e); return; }
+    // reapply mute state on the new track
+    camStream.getAudioTracks().forEach(t => t.enabled = !audioMuted);
+    startVU();
+}
+
+// -- audio processing toggles (disabled while recording to avoid stream breaks)
+echoCancelBtn.onclick = async () => {
+    echoCancel = !echoCancel;
+    echoCancelBtn.textContent = echoCancel ? 'Echo: On' : 'Echo: Off';
+    await restartAudio();
+};
+noiseBtn.onclick = async () => {
+    noiseSuppress = !noiseSuppress;
+    noiseBtn.textContent = noiseSuppress ? 'Noise: On' : 'Noise: Off';
+    await restartAudio();
+};
+gainBtn.onclick = async () => {
+    autoGain = !autoGain;
+    gainBtn.textContent = autoGain ? 'Gain: On' : 'Gain: Off';
+    await restartAudio();
+};
+
+// -- mute buttons -------------------------------------------------------------
+muteAudioBtn.onclick = () => {
+    audioMuted = !audioMuted;
+    camStream?.getAudioTracks().forEach(t => t.enabled = !audioMuted);
+    muteAudioBtn.textContent = audioMuted ? 'Unmute Mic' : 'Mute Mic';
+    if (audioMuted) setVU(0);
+};
+
+muteVideoBtn.onclick = async () => {
+    if (!camStream) {
+        const ok = await startCameraAndMic();
+        if (!ok) return;
+    }
+    videoMuted = !videoMuted;
+    camStream.getVideoTracks().forEach(t => t.enabled = !videoMuted);
+    muteVideoBtn.textContent = videoMuted ? 'Unmute Video' : 'Mute Video';
+};
+
+// -- recording controls -------------------------------------------------------
+function setRecordingButtons(recording) {
+    startBtn.disabled    = recording;
+    stopBtn.disabled     = !recording;
+    // audio setting changes mid-recording risk breaking the MediaRecorder stream
+    echoCancelBtn.disabled = recording;
+    noiseBtn.disabled      = recording;
+    gainBtn.disabled       = recording;
+}
+
+startBtn.onclick = async () => {
+    const ok = await startCameraAndMic();
+    if (!ok) return;
+
     recordingUUID  = genUUID();
     recordedChunks = [];
     recordedBuffer = null;
@@ -118,7 +338,6 @@ startBtn.onclick = async () => {
     totalRequests  = 0;
     urlBox.hidden  = true;
 
-    // prefer VP8+Opus for broad compatibility; browser decides if not supported
     const mimeType = ['video/webm;codecs=vp8,opus',
                       'video/webm;codecs=vp9,opus',
                       'video/webm']
@@ -147,23 +366,19 @@ startBtn.onclick = async () => {
         recUrl.href = url;
         recUrl.textContent = url;
         urlBox.hidden = false;
+        setRecordingButtons(false);
         log_always('published UUID:', recordingUUID, 'size:', recordedBuffer.byteLength, 'bytes');
         updateServedInfo();
     };
 
-    mediaRecorder.start(1000); // collect a chunk every second
+    mediaRecorder.start(1000);
     setLed(recLed, true);
-    startBtn.disabled = true;
-    stopBtn.disabled  = false;
+    setRecordingButtons(true);
     log_always('recording started  UUID:', recordingUUID, '  codec:', mimeType || '(browser default)');
 };
 
 stopBtn.onclick = () => {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-        mediaRecorder.stop();
-        stopBtn.disabled  = true;
-        startBtn.disabled = false;
-    }
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
 };
 
 function updateServedInfo() {
@@ -195,7 +410,6 @@ function replyContent(req, replyTo) {
             base64: u8toB64(chunk),
             eof:    totalSize
         }};
-        // replyTo is the src SocketAddr string from the Forwarded wrapper.
         // Forward{src} tells the server to send the Content UDP packet directly
         // back to that address, bypassing ed25519 lookup.
         const wire = replyTo
@@ -244,9 +458,10 @@ function connect() {
 }
 
 setInterval(() => {
-    if (!recordedBuffer) return;
-    const mb = (recordedBuffer.byteLength / 1024 / 1024).toFixed(2);
-    statsEl.textContent = `id: ${recordingUUID}\nsize: ${mb} MB  served blocks: ${servedBlocks}  requests: ${totalRequests}`;
+    const mb = recordedBuffer ? (recordedBuffer.byteLength / 1024 / 1024).toFixed(2) + ' MB' : '--';
+    statsEl.textContent = recordingUUID
+        ? `id: ${recordingUUID}\nsize: ${mb}  served blocks: ${servedBlocks}  requests: ${totalRequests}`
+        : '';
 }, 1000);
 
 connect();
