@@ -385,7 +385,7 @@ const pendingVideoPings = new Map();
 let audioFramesSent = 0, videoFramesSent = 0;
 let lastAudioRtt = null, lastRemoteBuf = null;
 
-let keyBps   = 200000;
+let keyBps   = 175000;
 let deltaBps = 200000;
 
 const RING_SIZE  = 32768;             // ~682ms capacity at 48kHz
@@ -524,7 +524,7 @@ async function startCameraAndMic() {
                     chunk.copyTo(data);
                     if (chunk.type === 'key') 
                         keyBps = keyBps*0.9+chunk.byteLength*0.1*2*8;
-                    else deltaBps = deltaBps*0.9+chunk.byteLength*0.1*22*8;
+                    else deltaBps = deltaBps*0.991258+chunk.byteLength*(1-0.991258)*22*8;
                     videoSeqSent++;
                     log('video', chunk.type, chunk.byteLength+'B seq'+videoSeqSent);
                     const vmsgs = [{VideoFrame:{ codec:'vp8', keyframe: chunk.type==='key',
