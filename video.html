@@ -338,9 +338,8 @@ cameraSelect.onchange = () => {
 // -- state --------------------------------------------------------------------
 let camStream    = null;
 let encoder      = null;
-let decoder      = null;
+let videoDecoder      = null;
 let frameReader  = null;
-let needKeyframe = true;
 let frameCount   = 0;
 let videoMuted   = true;
 let micActive    = false;
@@ -385,11 +384,9 @@ const pendingAudioPings = new Map();
 const pendingVideoPings = new Map();
 let audioFramesSent = 0, videoFramesSent = 0;
 let lastAudioRtt = null, lastRemoteBuf = null;
-let lastArrivalMs = null, lastArrivalOffset = null;
 
-const BPS_WINDOW_MS = 5000;
-const keyframeBits   = []; // {t, bytes} -- raw VP8 bytes, keyframes
-const deltaframeBits = []; // {t, bytes} -- raw VP8 bytes, delta frames
+let keyBps   = 200000;
+let deltaBps = 200000;
 
 const RING_SIZE  = 32768;             // ~682ms capacity at 48kHz
 const AUDIO_RATE = 48000;
@@ -400,7 +397,6 @@ let   audioBufTarget = MIN_BUF;      // adaptive; drives videoDelayMs
 const ring = new Float32Array(RING_SIZE);
 let writeIdx = 0, readIdx = 0;
 let inUnderrun = false;
-let holdForFill = false; // true after underrun: play silence until ring reaches audioBufTarget
 
 // -- audio receive decoder (no user gesture needed) ---------------------------
 if ('AudioDecoder' in window) {
@@ -430,7 +426,6 @@ if ('AudioDecoder' in window) {
     catch(e) { log_always('AudioDecoder configure failed:', e.message); audioDecoder = null; }
 }
 
-// -- video decoder ------------------------------------------------------------
 function makeDecoder(w, h) {
     const d = new VideoDecoder({
         output: frame => {
@@ -443,9 +438,8 @@ function makeDecoder(w, h) {
                 videoQueue.push({ bm, due: Date.now() + videoDelayMs() });
             });
             frame.close();
-            needKeyframe = false;
         },
-        error: e => { log_always('video decoder err:', e.message || e); needKeyframe = true; }
+        error: e => { log_always('video videoDecoder err:', e.message || e); }
     });
     const cfg = { codec: 'vp8' };
     if (w && h) { cfg.codedWidth = w; cfg.codedHeight = h; }
@@ -465,24 +459,7 @@ async function ensureAudioCtx() {
         const out = e.outputBuffer.getChannelData(0);
         const depth = (writeIdx - readIdx + RING_SIZE) & (RING_SIZE - 1);
 
-        // After underrun: hold off playback until ring actually fills to target.
-        // Without this, audio resumes immediately on the first decoded packet and
-        // starves again instantly, causing the target to climb without bound.
-        if (holdForFill) {
-            // Require one extra callback's worth of slack beyond target so the first
-            // playback callback doesn't immediately drain the ring and re-underrun.
-            if (depth >= audioBufTarget + SP_FRAMES) {
-                holdForFill = false;
-                inUnderrun = false;
-            } else {
-                out.fill(0);
-                setLed(rxLed, false);
-                audioBufTarget = Math.max(MIN_BUF, audioBufTarget - 4);
-                return;
-            }
-        }
-
-        let underrun = false;
+        let underrun = 0;
         for (let i = 0; i < out.length; i++) {
             if (readIdx !== writeIdx) {
                 lastSample = ring[readIdx];
@@ -491,30 +468,14 @@ async function ensureAudioCtx() {
             } else {
                 lastSample *= 0.997; // fade to silence on underrun
                 out[i] = lastSample;
-                underrun = true;
+                underrun +=1;
             }
         }
-        if (underrun) {
+     if (underrun>0) 
             setLed(rxLed, false);
-            // bump only on leading edge of each underrun period, not for every callback while starved
-            if (!inUnderrun) {
-                audioBufTarget = Math.min(MAX_BUF, audioBufTarget + SP_FRAMES * 4);
-                holdForFill = true;
-            }
-            inUnderrun = true;
-        } else {
-            inUnderrun = false;
-        }
-        // slow decay back toward minimum (~100s from 500ms to min, so spotty links stay buffered)
-        audioBufTarget = Math.max(MIN_BUF, audioBufTarget - 4);
-        videoDelayMs = Math.round(audioBufTarget / AUDIO_RATE * 1000);
+      audioBufTarget = Math.min(MAX_BUF, Math.max(MIN_BUF, audioBufTarget + underrun - 4));
     };
     playProc.connect(audioCtx.destination);
-    const keepAlive = audioCtx.createConstantSource();
-    keepAlive.offset.value = 1e-10; // non-zero so Chrome doesn't quiesce the audio graph
-    keepAlive.connect(playProc);
-    keepAlive.start();
-    log_always('audio playback ready');
 }
 // auto-start playback on any first user interaction
 document.addEventListener('click', () => ensureAudioCtx().catch(() => {}), { once: true });
@@ -561,7 +522,9 @@ async function startCameraAndMic() {
                     if (videoMuted || socket.readyState !== WebSocket.OPEN || !their_ed25519.value) return;
                     const data = new Uint8Array(chunk.byteLength);
                     chunk.copyTo(data);
-                    (chunk.type === 'key' ? keyframeBits : deltaframeBits).push({ t: Date.now(), bytes: chunk.byteLength });
+                    if (chunk.type === 'key') 
+                        keyBps = keyBps*0.9+chunk.byteLength*0.1*2*8;
+                    else deltaBps = deltaBps*0.9+chunk.byteLength*0.1*22*8;
                     videoSeqSent++;
                     log('video', chunk.type, chunk.byteLength+'B seq'+videoSeqSent);
                     const vmsgs = [{VideoFrame:{ codec:'vp8', keyframe: chunk.type==='key',
@@ -611,8 +574,7 @@ async function startCameraAndMic() {
             })();
         }
 
-        decoder = makeDecoder();
-        needKeyframe = true;
+        videoDecoder = makeDecoder();
         muteVideoBtn.disabled = false;
     }
 
@@ -737,24 +699,22 @@ document.getElementById('gainBtn').onclick = async () => {
 
 // -- video reorder buffer helpers ---------------------------------------------
 function decodeVideoFrame(vf) {
-    //if (needKeyframe && !vf.keyframe) return;
     if (vf.w && vf.h && (vf.w !== remoteCanvas.width || vf.h !== remoteCanvas.height)) {
-        if (decoder && decoder.state !== 'closed') { try { decoder.close(); } catch {} }
-        decoder = makeDecoder(vf.w, vf.h);
+        if (videoDecoder && videoDecoder.state !== 'closed') { try { videoDecoder.close(); } catch {} }
+        videoDecoder = makeDecoder(vf.w, vf.h);
         remoteCanvas.width  = vf.w;
         remoteCanvas.height = vf.h;
         fitEl(remoteCanvas, vf.w, vf.h);
-        needKeyframe = true;
         if (!vf.keyframe) return;
     }
-    if (!decoder || decoder.state === 'closed') decoder = makeDecoder(vf.w, vf.h);
+    if (!videoDecoder || videoDecoder.state === 'closed') videoDecoder = makeDecoder(vf.w, vf.h);
     try {
-        decoder.decode(new EncodedVideoChunk({
+        videoDecoder.decode(new EncodedVideoChunk({
             type: vf.keyframe ? 'key' : 'delta',
             timestamp: videoSeqLastDisplayed,
             data: b64ToU8(vf.data)
         }));
-    } catch(e) { log_always('video decode err:', e.message || e); needKeyframe = true; }
+    } catch(e) { log_always('video decode err:', e.message || e); }
 }
 
 function drainVideoPending() {
@@ -785,7 +745,6 @@ function drainVideoPending() {
         const skipped = minSeq - next;
         if (skipped > 0) { videoDrops += skipped; lastVideoDropMs = Date.now(); }
         videoSeqLastDisplayed = minSeq - 1;
-        needKeyframe = true;
         // loop continues: picks up minSeq on next iteration
     }
 }
@@ -875,14 +834,11 @@ function connect() {
                         }
                     }
                     if (forwarded && 'VideoFrame' in msg) {
+                        ensureAudioCtx().catch(() => {});
                         const vf = msg.VideoFrame;
                         if (vf.codec !== 'vp8') continue;
-                        if (vf.seq !== undefined) {
-                            if (vf.seq <= videoSeqLastDisplayed) continue; // stale
-                            videoPending.set(vf.seq, { vf });
-                        } else {
-                            decodeVideoFrame(vf); // no seq: decode directly
-                        }
+                        if (vf.seq <= videoSeqLastDisplayed) continue; 
+                        videoPending.set(vf.seq, { vf });
                         drainVideoPending();
                     }
                     if (forwarded && 'AudioFrame' in msg) {
@@ -937,7 +893,7 @@ function connect() {
 const statsEl = document.getElementById('stats');
 (function renderLoop() {
     const now = Date.now();
-    while (!holdForFill && videoQueue.length && videoQueue[0].due <= now) {
+    while (videoQueue.length && videoQueue[0].due <= now) {
         const { bm } = videoQueue.shift();
         if (lastVideoFrame) lastVideoFrame.close();
         lastVideoFrame = bm;
@@ -1002,19 +958,14 @@ setInterval(() => {
         ? Math.round(lastAudioRtt / 2 + lastRemoteBuf)+'ms' : '--';
     const estTotal = (lastAudioRtt !== null && lastRemoteBuf !== null)
         ? Math.round(lastAudioRtt / 2 + lastRemoteBuf + videoDelayMs())+'ms' : '--';
-    const bpsFloor = now - BPS_WINDOW_MS;
-    while (keyframeBits.length   && keyframeBits[0].t   < bpsFloor) keyframeBits.shift();
-    while (deltaframeBits.length && deltaframeBits[0].t < bpsFloor) deltaframeBits.shift();
-    const keyBps   = Math.round(keyframeBits.reduce((s, x)   => s + x.bytes, 0) * 8 / (BPS_WINDOW_MS / 1000));
-    const deltaBps = Math.round(deltaframeBits.reduce((s, x) => s + x.bytes, 0) * 8 / (BPS_WINDOW_MS / 1000));
-    const fmtBps = n => n >= 1000 ? (n/1000).toFixed(1)+'kbps' : n+'bps';
+    const fmtBps = n => n.toFixed(0)+'bps';
     statsEl.innerHTML =
-        `send: ${sr}  recv: ${rr}  ${tipHtml('buf target', TIP_BUF)}: ${videoDelayMs()}ms  ${tipHtml('ring', TIP_RING)}: ${Math.round(ringDepth/AUDIO_RATE*1000)}ms\n` +
+        `send: ${sr}  recv: ${rr}  ${tipHtml('buf target', TIP_BUF)}: ${videoDelayMs()}ms  ${tipHtml('audio buf', TIP_RING)}: ${Math.round(ringDepth/AUDIO_RATE*1000)}ms\n` +
         `net RTT: ${rttStr}  remote buf: ${remoteBufStr}  est 1-way: ${est1way}  est total: ${estTotal}\n` +
-        `video key: ${fmtBps(keyBps)}  delta: ${fmtBps(deltaBps)}  (5s avg, raw VP8)\n` +
+        `video key: ${fmtBps(keyBps)}  delta: ${fmtBps(deltaBps)} \n` +
         `video loss: ${videoDrops}  last: ${ago(lastVideoDropMs)}\n` +
         `audio loss: ${audioDrops}  last: ${ago(lastAudioDropMs)}`;
-}, 1000);
+}, 400);
 
 // -- max buffer slider --------------------------------------------------------
 (function() {
