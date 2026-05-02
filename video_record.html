@@ -136,9 +136,10 @@ let vuRafId          = null;
 // Chunks go to IndexedDB as they arrive; chunkMeta (byte offsets) is kept in
 // memory for fast range lookups.  Falls back to plain ArrayBuffer[] in memory
 // if IDB is unavailable (still works fine for shorter recordings).
-let db                  = null;  // IDB handle; null = memory fallback
+let db                  = null;  // IDB handle; null = IDB unavailable
+let idbWriteOk          = true;  // false after first write failure; db stays open for reads
 let chunkMeta           = [];    // [{start,end}] updated synchronously per chunk
-let chunks              = {};    // memory fallback keyed by chunk index
+let chunks              = {};    // memory store keyed by chunk index (fallback or overflow)
 let totalRecordedBytes  = 0;
 let pendingWrites       = 0;     // IDB writes still in flight
 let recordingDone       = false;
@@ -386,6 +387,7 @@ startBtn.onclick = async () => {
     // reset recording state; clear previous IDB data
     chunkMeta            = [];
     chunks               = {};
+    idbWriteOk           = true;
     totalRecordedBytes   = 0;
     recordingDone        = false;
     pendingWrites        = 0;
@@ -437,13 +439,14 @@ startBtn.onclick = async () => {
         // Write data asynchronously to IDB or memory fallback
         pendingWrites++;
         e.data.arrayBuffer().then(async buf => {
-            if (db) {
+            if (db && idbWriteOk) {
                 try { await idbPut(idx, buf); }
                 catch(err) {
-                    // IDB write failed (quota exceeded etc.) — fall back to memory
-                    // for this chunk and all subsequent ones so state stays consistent
-                    log_always('IDB write failed, switching to memory fallback:', err.message || err);
-                    db = null;
+                    // IDB write failed (quota exceeded etc.).  Keep db open for
+                    // reads of already-written chunks; store this and future chunks
+                    // in memory instead so readBytes can find everything.
+                    log_always('IDB write failed, storing remaining chunks in memory:', err.message || err);
+                    idbWriteOk = false;
                     chunks[idx] = buf;
                 }
             } else {
@@ -468,7 +471,7 @@ startBtn.onclick = async () => {
             await new Promise(res => { allWritesDoneResolve = res; });
         }
         const mb = (totalRecordedBytes / 1024 / 1024).toFixed(2);
-        const storageLabel = db ? 'IDB' : (Object.keys(chunks).length ? 'memory' : 'IDB+memory');
+        const storageLabel = !db ? 'memory' : idbWriteOk ? 'IDB' : 'IDB+memory';
         sizeInfo.textContent = `done: ${mb} MB  codec: ${recMimeType}  ${storageLabel}`;
         const url = wsToHttpBase(ws_url_input.value) + '/' + recordingUUID;
         recUrl.href = url;
@@ -511,7 +514,8 @@ async function readBytes(offset, length) {
         const cm = chunkMeta[i];
         if (cm.end   <= offset) continue;
         if (cm.start >= end)    break;
-        const buf  = db ? await idbGet(i) : chunks[i];
+        // Check memory first (post-failure chunks), then IDB (pre-failure chunks)
+        const buf  = chunks[i] !== undefined ? chunks[i] : (db ? await idbGet(i) : null);
         if (!buf) { log_always(`chunk ${i} missing`); continue; }
         const from = Math.max(cm.start, offset) - cm.start;
         const len  = Math.min(cm.end, end) - Math.max(cm.start, offset);
