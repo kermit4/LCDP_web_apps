@@ -2,7 +2,7 @@
 <html><head><title>CJP2P video record</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-video { display:block; background:#000; }
+video, canvas { display:block; background:#000; }
 .vid-wrap { display:inline-block; position:relative; vertical-align:top; }
 .vid-label { font-size:11px; color:#888; }
 #controls { display:flex; align-items:center; gap:8px; margin:6px 0; flex-wrap:wrap; }
@@ -27,7 +27,8 @@ ws url: <input id=ws_url size=50>
 <p>
 <div class=vid-wrap>
   <div class=vid-label>Camera preview</div>
-  <video id=localVideo autoplay muted playsinline style="width:320px;height:240px"></video>
+  <video id=localVideo autoplay muted playsinline hidden></video>
+  <canvas id=localCanvas width=320 height=240 style="width:320px;height:240px"></canvas>
 </div>
 <div id=controls>
   <span class=led id=recLed title="recording"></span>
@@ -54,6 +55,8 @@ ws url: <input id=ws_url size=50>
 
 <script>
 const localVideo    = document.getElementById('localVideo');
+const localCanvas   = document.getElementById('localCanvas');
+const canvasCtx     = localCanvas.getContext('2d');
 const recLed        = document.getElementById('recLed');
 const startBtn      = document.getElementById('startBtn');
 const stopBtn       = document.getElementById('stopBtn');
@@ -95,6 +98,38 @@ function u8toB64(u8) {
     let s = ''; const C = 0x8000;
     for (let i = 0; i < u8.length; i += C) s += String.fromCharCode.apply(null, u8.subarray(i, i+C));
     return btoa(s);
+}
+
+// -- canvas draw loop (clock overlay) -----------------------------------------
+let drawRafId = null;
+
+function startDrawLoop() {
+    if (drawRafId) return;
+    function draw() {
+        drawRafId = requestAnimationFrame(draw);
+        if (localVideo.readyState >= 2) {
+            if (localVideo.videoWidth > 0 && localCanvas.width !== localVideo.videoWidth) {
+                localCanvas.width  = localVideo.videoWidth;
+                localCanvas.height = localVideo.videoHeight;
+            }
+            canvasCtx.drawImage(localVideo, 0, 0, localCanvas.width, localCanvas.height);
+        } else {
+            canvasCtx.fillStyle = '#000';
+            canvasCtx.fillRect(0, 0, localCanvas.width, localCanvas.height);
+        }
+        const ts  = new Date().toISOString().slice(0, 19).replace('T', '-');
+        const fh  = Math.max(14, Math.round(localCanvas.height * 0.04));
+        const pad = 6;
+        canvasCtx.font         = `${fh}px monospace`;
+        canvasCtx.textAlign    = 'right';
+        canvasCtx.textBaseline = 'bottom';
+        canvasCtx.lineWidth    = 3;
+        canvasCtx.strokeStyle  = 'rgba(0,0,0,0.75)';
+        canvasCtx.strokeText(ts, localCanvas.width - pad, localCanvas.height - pad);
+        canvasCtx.fillStyle    = 'rgba(255,255,255,0.65)';
+        canvasCtx.fillText(ts, localCanvas.width - pad, localCanvas.height - pad);
+    }
+    draw();
 }
 
 // -- LED + VU meter -----------------------------------------------------------
@@ -307,6 +342,7 @@ async function startCameraAndMic() {
         });
     } catch(e) { log_always('getUserMedia failed:', e.message || e); return false; }
     localVideo.srcObject = camStream;
+    startDrawLoop();
     const vt = camStream.getVideoTracks()[0];
     selectedCameraId = vt?.getSettings().deviceId || selectedCameraId;
     checkZoom(vt);
@@ -376,7 +412,6 @@ muteVideoBtn.onclick = async () => {
 function setRecordingButtons(recording) {
     startBtn.disabled      = recording;
     stopBtn.disabled       = !recording;
-    cameraSelect.disabled  = recording;
     // audio setting changes mid-recording risk breaking the MediaRecorder stream
     echoCancelBtn.disabled = recording;
     noiseBtn.disabled      = recording;
@@ -430,7 +465,9 @@ startBtn.onclick = async () => {
         .find(t => MediaRecorder.isTypeSupported(t)) || '';
 
     try {
-        mediaRecorder = new MediaRecorder(camStream, mimeType ? {mimeType} : {});
+        const recStream = localCanvas.captureStream(30);
+        camStream.getAudioTracks().forEach(t => recStream.addTrack(t));
+        mediaRecorder = new MediaRecorder(recStream, mimeType ? {mimeType} : {});
     } catch(e) { log_always('MediaRecorder init failed:', e.message || e); return; }
     recMimeType = mediaRecorder.mimeType;
 
@@ -549,7 +586,8 @@ async function replyContent(req, replyTo) {
     if (socket && socket.readyState === WebSocket.OPEN) {
         const isLast = recordingDone && pendingWrites === 0 && (offset + length >= totalRecordedBytes);
         const contentMsg = { id: req.id, offset, base64: u8toB64(chunk) };
-        if (isLast) contentMsg.eof = totalRecordedBytes;
+        contentMsg.eof = totalRecordedBytes;
+        if (!isLast) contentMsg.eof += 1000000;
         const content = { Content: contentMsg };
         // Forward{src} tells the server to send the Content UDP packet directly
         // back to that address, bypassing ed25519 lookup.
