@@ -141,6 +141,9 @@ let idbWriteOk          = true;  // false after first write failure; db stays op
 let chunkMeta           = [];    // [{start,end}] updated synchronously per chunk
 let chunks              = {};    // memory store keyed by chunk index (fallback or overflow)
 let totalRecordedBytes  = 0;
+let writtenUpTo         = 0;     // bytes confirmed written to IDB/memory (contiguous from 0)
+let writtenChunkNext    = 0;     // next chunk index needed to advance writtenUpTo
+let writtenChunkSet     = new Set(); // chunk indices whose writes have completed
 let pendingWrites       = 0;     // IDB writes still in flight
 let recordingDone       = false;
 let allWritesDoneResolve = null;
@@ -389,6 +392,9 @@ startBtn.onclick = async () => {
     chunks               = {};
     idbWriteOk           = true;
     totalRecordedBytes   = 0;
+    writtenUpTo          = 0;
+    writtenChunkNext     = 0;
+    writtenChunkSet      = new Set();
     recordingDone        = false;
     pendingWrites        = 0;
     allWritesDoneResolve = null;
@@ -455,6 +461,12 @@ startBtn.onclick = async () => {
         }).catch(err => {
             log_always('arrayBuffer() failed:', err);
         }).finally(() => {
+            // Advance writtenUpTo through all contiguous completed chunks
+            writtenChunkSet.add(idx);
+            while (writtenChunkSet.has(writtenChunkNext) && writtenChunkNext < chunkMeta.length) {
+                writtenUpTo = chunkMeta[writtenChunkNext].end;
+                writtenChunkNext++;
+            }
             pendingWrites--;
             if (recordingDone && pendingWrites === 0 && allWritesDoneResolve) {
                 allWritesDoneResolve();
@@ -473,12 +485,8 @@ startBtn.onclick = async () => {
         const mb = (totalRecordedBytes / 1024 / 1024).toFixed(2);
         const storageLabel = !db ? 'memory' : idbWriteOk ? 'IDB' : 'IDB+memory';
         sizeInfo.textContent = `done: ${mb} MB  codec: ${recMimeType}  ${storageLabel}`;
-        const url = wsToHttpBase(ws_url_input.value) + '/' + recordingUUID;
-        recUrl.href = url;
-        recUrl.textContent = url;
-        urlBox.hidden = false;
         setRecordingButtons(false);
-        log_always('published UUID:', recordingUUID, 'size:', totalRecordedBytes, 'bytes',
+        log_always('recording done:', recordingUUID, totalRecordedBytes, 'bytes',
                    db ? '(IndexedDB)' : '(memory)');
         updateServedInfo();
     };
@@ -486,6 +494,11 @@ startBtn.onclick = async () => {
     mediaRecorder.start(1000);
     setLed(recLed, true);
     setRecordingButtons(true);
+    // Show URL immediately — first chunk will be available within a second
+    const url = wsToHttpBase(ws_url_input.value) + '/' + recordingUUID;
+    recUrl.href = url;
+    recUrl.textContent = url;
+    urlBox.hidden = false;
     log_always('recording started  UUID:', recordingUUID, '  codec:', mimeType || '(browser default)');
 };
 
@@ -526,22 +539,18 @@ async function readBytes(offset, length) {
 }
 
 async function replyContent(req, replyTo) {
-    if (!recordingDone || pendingWrites > 0) { log('recording not ready yet'); return; }
     if (req.id !== recordingUUID) { log('PleaseSendContent for unknown id:', req.id); return; }
+    const offset = req.offset || 0;
+    if (offset >= writtenUpTo) { log(`not yet available: off=${offset} writtenUpTo=${writtenUpTo}`); return; }
     totalRequests++;
-    const totalSize = totalRecordedBytes;
-    const offset    = req.offset || 0;
-    if (offset >= totalSize) { log('PleaseSendContent offset past EOF'); return; }
-    const length = Math.min(req.length || BLOCK_SIZE, totalSize - offset);
+    const length = Math.min(req.length || BLOCK_SIZE, writtenUpTo - offset);
     const chunk  = await readBytes(offset, length);
     if (!chunk) { log_always('readBytes null at offset', offset); return; }
     if (socket && socket.readyState === WebSocket.OPEN) {
-        const content = { Content: {
-            id:     req.id,
-            offset: offset,
-            base64: u8toB64(chunk),
-            eof:    totalSize
-        }};
+        const isLast = recordingDone && pendingWrites === 0 && (offset + length >= totalRecordedBytes);
+        const contentMsg = { id: req.id, offset, base64: u8toB64(chunk) };
+        if (isLast) contentMsg.eof = totalRecordedBytes;
+        const content = { Content: contentMsg };
         // Forward{src} tells the server to send the Content UDP packet directly
         // back to that address, bypassing ed25519 lookup.
         const wire = replyTo
@@ -549,7 +558,7 @@ async function replyContent(req, replyTo) {
             : [content];
         socket.send(JSON.stringify(wire));
         servedBlocks++;
-        log(`-> Content src=${replyTo} off=${offset} len=${length}/${totalSize}`);
+        log(`-> Content src=${replyTo} off=${offset} len=${length} writtenUpTo=${writtenUpTo}${isLast?' EOF':''}`);
         updateServedInfo();
     }
 }
