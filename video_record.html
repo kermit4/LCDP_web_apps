@@ -578,7 +578,19 @@ async function readBytes(offset, length) {
 async function replyContent(req, replyTo) {
     if (req.id !== recordingUUID) { log('PleaseSendContent for unknown id:', req.id); return; }
     const offset = req.offset || 0;
-    if (offset >= writtenUpTo) { log(`not yet available: off=${offset} writtenUpTo=${writtenUpTo}`); return; }
+    if (offset >= writtenUpTo) {
+        if (recordingDone && pendingWrites === 0 && socket && socket.readyState === WebSocket.OPEN) {
+            const contentMsg = { id: req.id, offset, base64: '', eof: totalRecordedBytes };
+            const wire = replyTo
+                ? [{ Forward: { src: replyTo, messages: [{ Content: contentMsg }] } }]
+                : [{ Content: contentMsg }];
+            socket.send(JSON.stringify(wire));
+            log(`-> Content EOF-only src=${replyTo} off=${offset} eof=${totalRecordedBytes}`);
+        } else {
+            log(`not yet available: off=${offset} writtenUpTo=${writtenUpTo}`);
+        }
+        return;
+    }
     totalRequests++;
     const length = Math.min(req.length || BLOCK_SIZE, writtenUpTo - offset);
     const chunk  = await readBytes(offset, length);
