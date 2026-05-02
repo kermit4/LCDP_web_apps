@@ -597,5 +597,10 @@ setInterval(() => {
 }, 1000);
 
 connect();
+// Start camera + mic immediately so preview, VU meter, and camera selection
+// are live before the user decides to hit Record.  On browsers that require a
+// user gesture for getUserMedia this will silently fail and the button click
+// will trigger it instead (startCameraAndMic guards with "if (camStream) return").
+startCameraAndMic().catch(() => {});
 </script>
 </body></html>
