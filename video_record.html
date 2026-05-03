@@ -599,7 +599,7 @@ async function replyContent(req, replyTo) {
             : [content];
         socket.send(JSON.stringify(wire));
         servedBlocks++;
-        log(`-> Content src=${replyTo} off=${offset} len=${length} writtenUpTo=${writtenUpTo}${isLast?' EOF':''}`);
+        log(`-> Content src=${replyTo} off=${offset} len=${length} writtenUpTo=${writtenUpTo}`);
         updateServedInfo();
     }
 }
