@@ -410,12 +410,8 @@ muteVideoBtn.onclick = async () => {
 
 // -- recording controls -------------------------------------------------------
 function setRecordingButtons(recording) {
-    startBtn.disabled      = recording;
-    stopBtn.disabled       = !recording;
-    // audio setting changes mid-recording risk breaking the MediaRecorder stream
-    echoCancelBtn.disabled = recording;
-    noiseBtn.disabled      = recording;
-    gainBtn.disabled       = recording;
+    startBtn.disabled = recording;
+    stopBtn.disabled  = !recording;
 }
 
 startBtn.onclick = async () => {
@@ -457,7 +453,8 @@ startBtn.onclick = async () => {
         }
     }
 
-    recordingUUID = genStreamId();
+    // recordingUUID was set at page-load (or after last stop) -- keep it stable so
+    // the URL shared before clicking Start remains valid
 
     const mimeType = ['video/webm;codecs=vp8,opus',
                       'video/webm;codecs=vp9,opus',
@@ -523,6 +520,8 @@ startBtn.onclick = async () => {
         const storageLabel = !db ? 'memory' : idbWriteOk ? 'IDB' : 'IDB+memory';
         sizeInfo.textContent = `done: ${mb} MB  codec: ${recMimeType}  ${storageLabel}`;
         setRecordingButtons(false);
+        recordingUUID = genStreamId(); // fresh id ready for next recording
+        showStreamUrl();
         log_always('recording done:', recordingUUID, totalRecordedBytes, 'bytes',
                    db ? '(IndexedDB)' : '(memory)');
         updateServedInfo();
