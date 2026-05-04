@@ -418,21 +418,21 @@ startBtn.onclick = async () => {
     const ok = await startCameraAndMic();
     if (!ok) return;
 
-    // reset recording state; clear previous IDB data
-    chunkMeta            = [];
-    chunks               = {};
-    idbWriteOk           = true;
-    totalRecordedBytes   = 0;
-    writtenUpTo          = 0;
-    writtenChunkNext     = 0;
-    writtenChunkSet      = new Set();
     recordingDone        = false;
     pendingWrites        = 0;
     allWritesDoneResolve = null;
-    servedBlocks         = 0;
-    totalRequests        = 0;
-    urlBox.hidden        = true;
-    if (db) await idbClear().catch(e => log_always('idb clear err:', e));
+    if (totalRecordedBytes === 0) {
+        // first start: full reset
+        chunkMeta        = [];
+        chunks           = {};
+        idbWriteOk       = true;
+        writtenUpTo      = 0;
+        writtenChunkNext = 0;
+        writtenChunkSet  = new Set();
+        servedBlocks     = 0;
+        totalRequests    = 0;
+        if (db) await idbClear().catch(e => log_always('idb clear err:', e));
+    }
 
     // Request persistent storage and log free quota before the first chunk
     // arrives.  persist() is the only call that may show a browser prompt
@@ -452,9 +452,6 @@ startBtn.onclick = async () => {
             }
         }
     }
-
-    // recordingUUID was set at page-load (or after last stop) -- keep it stable so
-    // the URL shared before clicking Start remains valid
 
     const mimeType = ['video/webm;codecs=vp8,opus',
                       'video/webm;codecs=vp9,opus',
@@ -520,8 +517,6 @@ startBtn.onclick = async () => {
         const storageLabel = !db ? 'memory' : idbWriteOk ? 'IDB' : 'IDB+memory';
         sizeInfo.textContent = `done: ${mb} MB  codec: ${recMimeType}  ${storageLabel}`;
         setRecordingButtons(false);
-        recordingUUID = genStreamId(); // fresh id ready for next recording
-        showStreamUrl();
         log_always('recording done:', recordingUUID, totalRecordedBytes, 'bytes',
                    db ? '(IndexedDB)' : '(memory)');
         updateServedInfo();
