@@ -182,11 +182,11 @@ let writtenChunkSet     = new Set(); // chunk indices whose writes have complete
 let pendingWrites       = 0;     // IDB writes still in flight
 let recordingDone       = false;
 let allWritesDoneResolve = null;
+let pushedUpTo          = 0;     // bytes pushed to Rust node via Content messages
 let mediaRecorder  = null;
 let recMimeType    = '';
 let recordingUUID  = genStreamId();
 let servedBlocks   = 0;
-let totalRequests  = 0;
 
 // -- IndexedDB ----------------------------------------------------------------
 const IDB_NAME  = 'cjp2p_video_record';
@@ -429,8 +429,8 @@ startBtn.onclick = async () => {
         writtenUpTo      = 0;
         writtenChunkNext = 0;
         writtenChunkSet  = new Set();
+        pushedUpTo       = 0;
         servedBlocks     = 0;
-        totalRequests    = 0;
         if (db) await idbClear().catch(e => log_always('idb clear err:', e));
     }
 
@@ -503,6 +503,7 @@ startBtn.onclick = async () => {
                 allWritesDoneResolve();
                 allWritesDoneResolve = null;
             }
+            pushPendingBlocks().catch(() => {});
         });
     };
 
@@ -512,6 +513,14 @@ startBtn.onclick = async () => {
         if (pendingWrites > 0) {
             log_always('flushing writes...');
             await new Promise(res => { allWritesDoneResolve = res; });
+        }
+        // Push any remaining data (final partial block) with eof set.
+        await pushPendingBlocks();
+        if (pushedUpTo < totalRecordedBytes) {
+            const off = pushedUpTo;
+            const chunk = await readBytes(off, totalRecordedBytes - off);
+            if (chunk) pushBlock(off, chunk, totalRecordedBytes);
+            pushedUpTo = totalRecordedBytes;
         }
         const mb = (totalRecordedBytes / 1024 / 1024).toFixed(2);
         const storageLabel = !db ? 'memory' : idbWriteOk ? 'IDB' : 'IDB+memory';
@@ -536,15 +545,37 @@ stopBtn.onclick = () => {
 function updateServedInfo() {
     if (!totalRecordedBytes) return;
     servedInfo.textContent =
-        `served ${servedBlocks} blocks to ${totalRequests} requests  (${totalRecordedBytes} bytes total)`;
+        `pushed ${servedBlocks} blocks  (${totalRecordedBytes} bytes total)`;
 }
 
 // -- content serving ----------------------------------------------------------
-// When a remote peer sends PleaseSendContent the server wraps it in a Forwarded
-// packet (including the peer's src IP:port) and delivers it to all WebSocket
-// clients.  We reply via Forward{src} so the server sends our Content block
-// directly back to that peer's UDP address.
 const BLOCK_SIZE = 4096; // must match server BLOCK_SIZE! macro (0x1000)
+
+function streamContentId() {
+    return my_ed25519 ? `stream/${my_ed25519}/${recordingUUID}` : null;
+}
+
+// Push a single block to the local Rust node; it will sign and relay.
+function pushBlock(offset, data, eof) {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    const sid = streamContentId();
+    if (!sid) return;
+    const msg = { Content: { id: sid, offset, base64: u8toB64(data) } };
+    if (eof !== undefined) msg.Content.eof = eof;
+    socket.send(JSON.stringify([msg]));
+    servedBlocks++;
+    updateServedInfo();
+}
+
+// Push all complete BLOCK_SIZE blocks that are newly written but not yet pushed.
+async function pushPendingBlocks() {
+    while (pushedUpTo + BLOCK_SIZE <= writtenUpTo) {
+        const off = pushedUpTo;
+        pushedUpTo += BLOCK_SIZE;
+        const chunk = await readBytes(off, BLOCK_SIZE);
+        if (chunk) pushBlock(off, chunk);
+    }
+}
 
 async function readBytes(offset, length) {
     const end    = offset + length;
@@ -565,31 +596,6 @@ async function readBytes(offset, length) {
     return filled > 0 ? result.subarray(0, filled) : null;
 }
 
-async function replyContent(req, replyTo) {
-    if (req.id !== recordingUUID) { log('PleaseSendContent for unknown id:', req.id); return; }
-    const offset = req.offset || 0;
-    if (offset >= writtenUpTo) {
-        log(`not yet available: off=${offset} writtenUpTo=${writtenUpTo}`);
-        return;
-    }
-    totalRequests++;
-    const length = Math.min(req.length || BLOCK_SIZE, writtenUpTo - offset);
-    const chunk  = await readBytes(offset, length);
-    if (!chunk) { log_always('readBytes null at offset', offset); return; }
-    if (socket && socket.readyState === WebSocket.OPEN) {
-        const contentMsg = { id: req.id, offset, base64: u8toB64(chunk) };
-        const content = { Content: contentMsg };
-        // Forward{src} tells the server to send the Content UDP packet directly
-        // back to that address, bypassing ed25519 lookup.
-        const wire = replyTo
-            ? [{ Forward: { src: replyTo, sign: true, messages: [content] } }]
-            : [content];
-        socket.send(JSON.stringify(wire));
-        servedBlocks++;
-        log(`-> Content src=${replyTo} off=${offset} len=${length} writtenUpTo=${writtenUpTo}`);
-        updateServedInfo();
-    }
-}
 
 function showStreamUrl() {
     if (!my_ed25519 || !recordingUUID) return;
@@ -622,16 +628,6 @@ function connect() {
                 my_ed25519 = msg.PleaseSignYourPub.ed25519;
                 showStreamUrl();
             }
-            // PleaseSendContent arriving from a network peer, forwarded by the server.
-            // src tells us who to reply to.
-            if ('Forwarded' in msg) {
-                const fwd = msg.Forwarded;
-                let inner;
-                try { inner = JSON.parse(fwd.messages); } catch { continue; }
-                for (const m of inner) {
-                    if ('PleaseSendContent' in m) replyContent(m.PleaseSendContent, fwd.src);
-                }
-            }
         }
     };
 }
@@ -639,8 +635,9 @@ function connect() {
 setInterval(() => {
     if (!recordingUUID) { statsEl.textContent = ''; return; }
     const mb = (totalRecordedBytes / 1024 / 1024).toFixed(2);
+    const sid = streamContentId() || recordingUUID;
     statsEl.textContent =
-        `id: ${recordingUUID}\nsize: ${mb} MB  served: ${servedBlocks} blocks  requests: ${totalRequests}`;
+        `id: ${sid}\nsize: ${mb} MB  pushed: ${servedBlocks} blocks`;
 }, 1000);
 
 connect();
