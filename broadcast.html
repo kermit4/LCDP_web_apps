@@ -453,9 +453,33 @@ startBtn.onclick = async () => {
         }
     }
 
-    const mimeType = ['video/webm;codecs=vp8,opus',
-                      'video/webm;codecs=vp9,opus',
-                      'video/webm']
+    const mimeType = [
+        'video/x-matroska;codecs=avc1,aac',
+        'video/x-matroska;codecs=avc1,opus',
+        'video/x-matroska;codecs=h264,aac',
+        'video/x-matroska;codecs=h264,opus',
+        'video/x-matroska;codecs=vp9,aac',
+        'video/x-matroska;codecs=vp9,opus',
+        'video/x-matroska;codecs=vp8,aac',
+        'video/x-matroska;codecs=vp8,opus',
+        'video/mp4;codecs=avc1,aac',
+        'video/mp4;codecs=avc1,opus',
+        'video/mp4;codecs=h264,aac',
+        'video/mp4;codecs=h264,opus',
+        'video/mp4;codecs=vp9,aac',
+        'video/mp4;codecs=vp9,opus',
+        'video/mp4;codecs=vp8,aac',
+        'video/mp4;codecs=vp8,opus',
+        'video/webm;codecs=avc1,aac',
+        'video/webm;codecs=avc1,opus',
+        'video/webm;codecs=h264,aac',
+        'video/webm;codecs=h264,opus',
+        'video/webm;codecs=vp9,aac',
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp8,aac',
+        'video/webm;codecs=vp8,opus',
+                      'video/webm'
+    ]
         .find(t => MediaRecorder.isTypeSupported(t)) || '';
 
     try {
