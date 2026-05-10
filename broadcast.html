@@ -40,9 +40,9 @@ ws url: <input id=ws_url size=50>
   <span id=sizeInfo style="font-size:11px;color:#555"></span>
 </div>
 <div style="font-size:12px;margin:3px 0;">
-  <button id=echoCancelBtn>Echo: On</button>
-  <button id=noiseBtn>Noise: Off</button>
-  <button id=gainBtn>Gain: Off</button>
+  <button id=echoCancelBtn>???</button>
+  <button id=noiseBtn>???</button>
+  <button id=gainBtn>???</button>
 </div>
 <div id=urlBox hidden>
   Recording ready -- share this URL:<br>
@@ -154,10 +154,13 @@ setVU(0);
 
 // -- audio/video state --------------------------------------------------------
 let echoCancel    = true;
-let noiseSuppress = false;
-let autoGain      = false;
+let noiseSuppress = true;
+let autoGain      = true;
 let audioMuted    = false;
 let videoMuted    = false;
+    echoCancelBtn.textContent = echoCancel ? 'Echo: On' : 'Echo: Off';
+    noiseBtn.textContent = noiseSuppress ? 'Noise: On' : 'Noise: Off';
+    gainBtn.textContent = autoGain ? 'Gain: On' : 'Gain: Off';
 
 // -- camera/stream state ------------------------------------------------------
 let camStream        = null;
