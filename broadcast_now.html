@@ -47,6 +47,7 @@ ws url: <input id=ws_url size=50>
 <div id=urlBox hidden>
   Recording ready -- share this URL:<br>
   <a id=recUrl href=""></a>
+  <br>Watch with seeking: <a id=watchUrl href=""></a>
   <br><small id=servedInfo style="color:#555"></small>
 </div>
 <pre id=stats style="font-size:11px;margin:4px 0;"></pre>
@@ -190,6 +191,12 @@ let mediaRecorder  = null;
 let recMimeType    = '';
 let recordingUUID  = genStreamId();
 let servedBlocks   = 0;
+
+// -- cue stream state (keyframe offsets pushed to <id>.cues.json) -------------
+let recStartTime   = null; // Date.now() at recording start
+let cueOffset      = 0;   // bytes written to the .cues.json stream so far
+let cueHeaderSent  = false;
+let pendingCues    = [];   // [{videoOffset, timeSinceStartMs}] queued while identity not yet known
 
 // -- IndexedDB ----------------------------------------------------------------
 const IDB_NAME  = 'cjp2p_video_record';
@@ -434,6 +441,10 @@ async function startrecord() {
         writtenChunkSet  = new Set();
         pushedUpTo       = 0;
         servedBlocks     = 0;
+        cueOffset        = 0;
+        cueHeaderSent    = false;
+        pendingCues      = [];
+        recStartTime     = null;
         if (db) await idbClear().catch(e => log_always('idb clear err:', e));
     }
 
@@ -457,22 +468,6 @@ async function startrecord() {
     }
 
     const mimeType = [
-        'video/x-matroska;codecs=avc1,aac',
-        'video/x-matroska;codecs=avc1,opus',
-        'video/x-matroska;codecs=h264,aac',
-        'video/x-matroska;codecs=h264,opus',
-        'video/x-matroska;codecs=vp9,aac',
-        'video/x-matroska;codecs=vp9,opus',
-        'video/x-matroska;codecs=vp8,aac',
-        'video/x-matroska;codecs=vp8,opus',
-        'video/mp4;codecs=avc1,aac',
-        'video/mp4;codecs=avc1,opus',
-        'video/mp4;codecs=h264,aac',
-        'video/mp4;codecs=h264,opus',
-        'video/mp4;codecs=vp9,aac',
-        'video/mp4;codecs=vp9,opus',
-        'video/mp4;codecs=vp8,aac',
-        'video/mp4;codecs=vp8,opus',
         'video/webm;codecs=avc1,aac',
         'video/webm;codecs=avc1,opus',
         'video/webm;codecs=h264,aac',
@@ -481,6 +476,22 @@ async function startrecord() {
         'video/webm;codecs=vp9,opus',
         'video/webm;codecs=vp8,aac',
         'video/webm;codecs=vp8,opus',
+        'video/mp4;codecs=vp8,aac',
+        'video/mp4;codecs=vp8,opus',
+        'video/mp4;codecs=vp9,aac',
+        'video/mp4;codecs=vp9,opus',
+        'video/mp4;codecs=avc1,aac',
+        'video/mp4;codecs=avc1,opus',
+        'video/mp4;codecs=h264,aac',
+        'video/mp4;codecs=h264,opus',
+        'video/x-matroska;codecs=avc1,aac',
+        'video/x-matroska;codecs=avc1,opus',
+        'video/x-matroska;codecs=h264,aac',
+        'video/x-matroska;codecs=h264,opus',
+        'video/x-matroska;codecs=vp9,aac',
+        'video/x-matroska;codecs=vp9,opus',
+        'video/x-matroska;codecs=vp8,aac',
+        'video/x-matroska;codecs=vp8,opus',
                       'video/webm'
     ]
         .find(t => MediaRecorder.isTypeSupported(t)) || '';
@@ -490,16 +501,18 @@ async function startrecord() {
         camStream.getAudioTracks().forEach(t => recStream.addTrack(t));
         mediaRecorder = new MediaRecorder(recStream, mimeType ? {mimeType} : {});
     } catch(e) { log_always('MediaRecorder init failed:', e.message || e); return; }
-    recMimeType = mediaRecorder.mimeType;
+    recMimeType = mediaRecorder.mimeType || mimeType;
 
     mediaRecorder.ondataavailable = e => {
         if (!e.data || e.data.size === 0) return;
+        if (!recMimeType) recMimeType = mediaRecorder.mimeType;
         // Update metadata synchronously to preserve chunk ordering
         const idx   = chunkMeta.length;
         const start = totalRecordedBytes;
         totalRecordedBytes += e.data.size;
         chunkMeta.push({ start, end: totalRecordedBytes });
         sizeInfo.textContent = `recording: ${(totalRecordedBytes/1024/1024).toFixed(1)} MB`;
+        recordCue(start, recStartTime ? Date.now() - recStartTime : 0);
         // Write data asynchronously to IDB or memory fallback
         pendingWrites++;
         e.data.arrayBuffer().then(async buf => {
@@ -542,6 +555,7 @@ async function startrecord() {
             await new Promise(res => { allWritesDoneResolve = res; });
         }
         // Push any remaining data (final partial block) with eof set.
+        flushPendingCues();
         await pushPendingBlocks();
         if (pushedUpTo < totalRecordedBytes) {
             const off = pushedUpTo;
@@ -558,6 +572,7 @@ async function startrecord() {
         updateServedInfo();
     };
 
+    recStartTime = Date.now();
     mediaRecorder.start(1000);
     setLed(recLed, true);
     setRecordingButtons(true);
@@ -624,11 +639,51 @@ async function readBytes(offset, length) {
 }
 
 
+// -- cue stream helpers -------------------------------------------------------
+function cueSid() {
+    const sid = streamContentId();
+    return sid ? sid + '.cues.json' : null;
+}
+
+function sendCueLine(line) {
+    const sid = cueSid();
+    if (!sid || !socket || socket.readyState !== WebSocket.OPEN) return false;
+    const bytes = new TextEncoder().encode(line + '\n');
+    const msg = { Content: { id: sid, offset: cueOffset, base64: u8toB64(bytes) } };
+    socket.send(JSON.stringify([msg]));
+    cueOffset += bytes.length;
+    return true;
+}
+
+function recordCue(videoOffset, timeSinceStartMs) {
+    if (!recMimeType) return;
+    pendingCues.push({ videoOffset, timeSinceStartMs });
+    flushPendingCues();
+}
+
+function flushPendingCues() {
+    if (!pendingCues.length) return;
+    if (!cueHeaderSent) {
+        if (!sendCueLine(JSON.stringify({ mime: recMimeType }))) return;
+        cueHeaderSent = true;
+    }
+    while (pendingCues.length) {
+        const { videoOffset, timeSinceStartMs } = pendingCues[0];
+        if (!sendCueLine(JSON.stringify({ o: videoOffset, t: Math.round(timeSinceStartMs) }))) return;
+        pendingCues.shift();
+    }
+}
+
 function showStreamUrl() {
     if (!my_ed25519 || !recordingUUID) return;
-    const url = `${wsToHttpBase(ws_url_input.value)}/stream/${my_ed25519}/${recordingUUID}`;
+    const base = wsToHttpBase(ws_url_input.value);
+    const url = `${base}/stream/${my_ed25519}/${recordingUUID}`;
     recUrl.href = url;
     recUrl.textContent = url;
+    const watchUrl = document.getElementById('watchUrl');
+    const wurl = `${base}/watch.html?v=stream/${my_ed25519}/${recordingUUID}`;
+    watchUrl.href = wurl;
+    watchUrl.textContent = wurl;
     urlBox.hidden = false;
 }
 
@@ -650,10 +705,12 @@ function connect() {
                 my_ed25519 = msg.YourEd25519.ed25519;
                 log_always('identity:', my_ed25519.slice(0,16)+'...');
                 showStreamUrl();
+                flushPendingCues();
             }
             if ('PleaseSignYourPub' in msg) {
                 my_ed25519 = msg.PleaseSignYourPub.ed25519;
                 showStreamUrl();
+                flushPendingCues();
             }
         }
     };
