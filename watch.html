@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html><head><title>Watch Live Stream</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; background: #111; color: #eee; font-family: monospace; }
+video { display: block; width: 100%; max-height: 72vh; background: #000; }
+#bar { padding: 6px 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: #1a1a1a; border-top: 1px solid #333; }
+#scrubRow { width: 100%; display: flex; align-items: center; gap: 6px; }
+#scrub { flex: 1; cursor: pointer; }
+#timeInfo { font-size: 11px; color: #aaa; white-space: nowrap; min-width: 80px; text-align: right; }
+#playPos { font-size: 11px; color: #aaa; white-space: nowrap; min-width: 32px; }
+button { background: #333; color: #eee; border: 1px solid #555; padding: 4px 10px; cursor: pointer; border-radius: 3px; font-family: monospace; }
+button:hover { background: #444; }
+#liveBtn { background: #600; border-color: #c44; }
+#liveBtn.on { background: #c00; border-color: #f88; animation: pulse 1.5s ease-in-out infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.65} }
+#status { font-size: 11px; color: #888; padding: 3px 8px; }
+#setup { padding: 12px; font-size: 13px; }
+#setup input { width: 420px; max-width: 90vw; font-family: monospace; background: #222; color: #eee; border: 1px solid #555; padding: 4px; }
+</style>
+</head>
+<body>
+<video id=v controls autoplay playsinline></video>
+<div id=bar>
+  <button id=liveBtn>&#x25B6; Live</button>
+  <div id=scrubRow>
+    <span id=playPos>0s</span>
+    <input type=range id=scrub min=0 max=0 value=0>
+    <span id=timeInfo></span>
+  </div>
+</div>
+<div id=status>Waiting for stream...</div>
+<div id=setup>
+  Stream path: <input id=streamInput placeholder="stream/pubkey/stream-id">
+  <button id=loadBtn>Load</button>
+  <br><small style="color:#666">or open as watch.html?v=stream/pubkey/stream-id</small>
+</div>
+
+<script>
+const video     = document.getElementById('v');
+const liveBtn   = document.getElementById('liveBtn');
+const scrub     = document.getElementById('scrub');
+const timeInfo  = document.getElementById('timeInfo');
+const playPos   = document.getElementById('playPos');
+const statusEl  = document.getElementById('status');
+const setup     = document.getElementById('setup');
+
+let mime      = '';   // recorder mime type from cues.json header line
+let cues      = [];   // [{o: byteOffset, t: ms from recording start}]
+let videoBase = '';   // http://host/stream/pk/id
+let cuesUrl   = '';   // videoBase + '.cues.json'
+
+let ms        = null;
+let sb        = null;
+let abortCtrl = null;
+let liveMode  = true;
+
+function status(msg) { statusEl.textContent = msg; }
+
+// -- URL / setup ---------------------------------------------------------------
+function initFromPath(path) {
+    path = path.trim();
+    if (!path.startsWith('stream/')) path = 'stream/' + path;
+    videoBase = `${location.protocol}//${location.host}/${path}`;
+    cuesUrl   = videoBase + '.cues.json';
+    document.getElementById('streamInput').value = path.replace(/^stream\//, '');
+    setup.hidden = true;
+    status('fetching cues...');
+    pollCues();
+}
+
+(() => {
+    const params = new URLSearchParams(location.search);
+    const v = params.get('v') || location.hash.replace(/^#/, '');
+    if (v) { initFromPath(v); return; }
+    setup.hidden = false;
+})();
+
+document.getElementById('loadBtn').onclick = () => {
+    const v = document.getElementById('streamInput').value.trim();
+    if (v) initFromPath(v);
+};
+
+// -- Cue polling ---------------------------------------------------------------
+// The server keeps the HTTP connection open after sending all available data.
+// We detect "end of available data" by aborting 180 ms after the last chunk.
+async function fetchCuesText() {
+    if (!cuesUrl) return '';
+    const ctrl = new AbortController();
+    let silenceTimer;
+    const resetSilence = () => {
+        clearTimeout(silenceTimer);
+        silenceTimer = setTimeout(() => ctrl.abort(), 180);
+    };
+    const chunks = [];
+    try {
+        const r = await fetch(cuesUrl, { signal: ctrl.signal, cache: 'no-store' });
+        if (!r.ok) { ctrl.abort(); return ''; }
+        const reader = r.body.getReader();
+        resetSilence();
+        while (true) {
+            const { done, value } = await reader.read().catch(() => ({ done: true }));
+            if (done) break;
+            chunks.push(value);
+            resetSilence();
+        }
+    } catch(e) { /* AbortError expected */ }
+    clearTimeout(silenceTimer);
+    if (!chunks.length) return '';
+    const total = chunks.reduce((s, c) => s + c.length, 0);
+    const all = new Uint8Array(total);
+    let pos = 0;
+    for (const c of chunks) { all.set(c, pos); pos += c.length; }
+    return new TextDecoder().decode(all);
+}
+
+function parseCues(text) {
+    const newCues = [];
+    let newMime = '';
+    for (const line of text.split('\n')) {
+        // NUL bytes mark the end of written data in the server's zero-padded block
+        if (!line || line.charCodeAt(0) === 0) break;
+        try {
+            const obj = JSON.parse(line);
+            if (obj.mime) newMime = obj.mime;
+            if (obj.o !== undefined) newCues.push({ o: obj.o, t: obj.t });
+        } catch(e) { /* partial last line — ignore */ }
+    }
+    let changed = false;
+    if (newMime && newMime !== mime) { mime = newMime; changed = true; }
+    if (newCues.length > cues.length)  { cues = newCues;  changed = true; }
+    return changed;
+}
+
+async function pollCues() {
+    if (!cuesUrl) return;
+    try {
+        const text = await fetchCuesText();
+        if (text && parseCues(text)) onCuesUpdated();
+    } catch(e) {}
+    setTimeout(pollCues, 2500);
+}
+
+function onCuesUpdated() {
+    if (!cues.length) return;
+    const durSec = cues[cues.length - 1].t / 1000;
+    scrub.max = Math.max(0, cues.length - 1);
+    timeInfo.textContent = `${durSec.toFixed(0)}s recorded`;
+    status(`${cues.length} keyframes  |  ${mime}`);
+
+    // Auto-play at live edge once we have enough cues for the init-segment boundary
+    if (liveMode && cues.length >= 2 && mime) {
+        const targetIdx = cues.length - 1;
+        // Only restart if we have moved at least one new keyframe further
+        if (!abortCtrl || scrub.value < targetIdx) {
+            scrub.value = targetIdx;
+            playFromCue(targetIdx);
+        }
+    }
+}
+
+// -- Scrubber / live button ----------------------------------------------------
+let scrubActive = false;
+scrub.addEventListener('mousedown', () => { scrubActive = true; });
+scrub.addEventListener('input', () => {
+    liveMode = false;
+    liveBtn.classList.remove('on');
+    const idx = +scrub.value;
+    if (cues[idx]) playPos.textContent = `${(cues[idx].t / 1000).toFixed(0)}s`;
+});
+scrub.addEventListener('change', () => {
+    scrubActive = false;
+    const idx = +scrub.value;
+    if (cues[idx]) playFromCue(idx);
+});
+
+liveBtn.onclick = () => {
+    liveMode = true;
+    liveBtn.classList.add('on');
+    if (cues.length >= 2) {
+        const idx = cues.length - 1;
+        scrub.value = idx;
+        playFromCue(idx);
+    }
+};
+
+video.addEventListener('timeupdate', () => {
+    if (scrubActive) return;
+    playPos.textContent = `${video.currentTime.toFixed(0)}s`;
+});
+
+// -- MSE playback --------------------------------------------------------------
+async function playFromCue(cueIdx) {
+    if (!videoBase || cues.length < 2 || !mime) return;
+
+    if (abortCtrl) abortCtrl.abort();
+    abortCtrl = new AbortController();
+    const sig = abortCtrl.signal;
+
+    // Chrome MSE does not support video/x-matroska — use video/webm (same EBML format)
+    const mseMime = mime.replace('video/x-matroska', 'video/webm');
+
+    if (!window.MediaSource || !MediaSource.isTypeSupported(mseMime)) {
+        status('MSE unsupported for: ' + mseMime + ' — falling back to direct src');
+        video.src = videoBase;
+        return;
+    }
+
+    // Tear down previous MediaSource cleanly
+    const prevSrc = video.src;
+    if (ms) {
+        try { if (ms.readyState === 'open') ms.endOfStream(); } catch(e) {}
+        ms = null; sb = null;
+    }
+    ms = new MediaSource();
+    video.src = URL.createObjectURL(ms);
+    if (prevSrc && prevSrc.startsWith('blob:')) URL.revokeObjectURL(prevSrc);
+
+    const opened = await new Promise(res => {
+        ms.addEventListener('sourceopen', () => res(true), { once: true });
+        sig.addEventListener('abort',     () => res(false), { once: true });
+    });
+    if (!opened || sig.aborted) return;
+
+    sb = ms.addSourceBuffer(mseMime);
+    sb.mode = 'segments';
+
+    liveBtn.classList.toggle('on', liveMode);
+    scrub.value = cueIdx;
+    if (cues[cueIdx]) playPos.textContent = `${(cues[cueIdx].t / 1000).toFixed(0)}s`;
+    status(`loading keyframe ${cueIdx} (byte ${cues[cueIdx].o})...`);
+
+    try {
+        // cues[1].o is where the first media cluster begins — everything before it
+        // is the EBML/Tracks init segment that MSE needs before any media data.
+        const initEnd = cues[1].o;
+
+        if (cueIdx > 0) {
+            // Non-zero start: fetch init segment separately, then stream from cue
+            const initBuf = await rangedFetch(0, initEnd - 1, sig);
+            if (sig.aborted) return;
+            await sbAppend(initBuf, sig);
+        }
+
+        // Stream media from the selected keyframe offset onwards
+        const startOff = cues[cueIdx].o;
+        status('playing from ' + (cues[cueIdx].t / 1000).toFixed(1) + 's');
+        await streamFrom(startOff, sig);
+    } catch(e) {
+        if (!sig.aborted) status('error: ' + (e.message || e));
+    }
+}
+
+async function rangedFetch(start, end, sig) {
+    const r = await fetch(videoBase, {
+        headers: { Range: `bytes=${start}-${end}` },
+        signal: sig
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.arrayBuffer();
+}
+
+async function streamFrom(startOff, sig) {
+    const r = await fetch(videoBase, {
+        headers: { Range: `bytes=${startOff}-` },
+        signal: sig
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const reader = r.body.getReader();
+    try {
+        while (!sig.aborted) {
+            const { done, value } = await reader.read();
+            if (done || sig.aborted) break;
+            await sbAppend(value, sig);
+            // Trim old buffered data so the SourceBuffer does not overflow
+            if (!sb.updating && video.currentTime > 30) {
+                try { sb.remove(0, video.currentTime - 20); } catch(e) {}
+            }
+        }
+    } finally {
+        reader.cancel().catch(() => {});
+    }
+}
+
+async function sbAppend(data, sig) {
+    if (!sb || sig?.aborted) return;
+    // Wait for any in-progress append to finish
+    while (sb.updating) {
+        await new Promise(r => sb.addEventListener('updateend', r, { once: true }));
+        if (sig?.aborted) return;
+    }
+    await new Promise((res, rej) => {
+        const onEnd = () => res();
+        const onErr = e => rej(e);
+        sb.addEventListener('updateend', onEnd, { once: true });
+        sb.addEventListener('error',     onErr, { once: true });
+        try {
+            // appendBuffer requires ArrayBuffer or BufferSource
+            const buf = data instanceof ArrayBuffer
+                ? data
+                : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+            sb.appendBuffer(buf);
+        } catch(e) {
+            sb.removeEventListener('updateend', onEnd);
+            sb.removeEventListener('error',     onErr);
+            rej(e);
+        }
+    });
+}
+</script>
+</body></html>
