@@ -18,6 +18,7 @@ button:hover { background: #444; }
 #status { font-size: 11px; color: #888; padding: 3px 8px; }
 #setup { padding: 12px; font-size: 13px; }
 #setup input { width: 420px; max-width: 90vw; font-family: monospace; background: #222; color: #eee; border: 1px solid #555; padding: 4px; }
+#dbg { margin: 6px 8px; padding: 6px; background: #0a0a0a; border: 1px solid #333; font-size: 10px; color: #8f8; min-height: 32px; max-height: 180px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
 </style>
 </head>
 <body>
@@ -31,6 +32,7 @@ button:hover { background: #444; }
   </div>
 </div>
 <div id=status>Waiting for stream...</div>
+<div id=dbg></div>
 <div id=setup>
   Stream path: <input id=streamInput placeholder="stream/pubkey/stream-id">
   <button id=loadBtn>Load</button>
@@ -38,6 +40,18 @@ button:hover { background: #444; }
 </div>
 
 <script>
+(function() {
+    const dbg = document.getElementById('dbg');
+    const _log = console.log.bind(console);
+    console.log = function(...args) {
+        _log(...args);
+        const line = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+        dbg.textContent += line + '\n';
+        dbg.scrollTop = dbg.scrollHeight;
+    };
+    console.log('dbg ready | MSE=' + !!window.MediaSource);
+})();
+
 const video     = document.getElementById('v');
 const liveBtn   = document.getElementById('liveBtn');
 const scrub     = document.getElementById('scrub');
@@ -50,9 +64,13 @@ let mime      = '';   // recorder mime type from cues.json header line
 let cues      = [];   // [{o: byteOffset, t: ms from recording start}]
 let videoBase = '';   // http://host/stream/pk/id
 let cuesUrl   = '';   // videoBase + '.cues.json'
-
-let abortCtrl = null;
 let liveMode  = true;
+
+// MSE state — one MediaSource per playback session (seek creates a new one)
+let ms         = null;   // current MediaSource
+let sb         = null;   // current SourceBuffer
+let sbQueue    = [];     // ArrayBuffers / Uint8Arrays waiting to be appended
+let streamCtrl = null;   // AbortController for the current fetch stream
 
 function status(msg) { statusEl.textContent = msg; }
 
@@ -147,9 +165,14 @@ function onCuesUpdated() {
     timeInfo.textContent = `${durSec.toFixed(0)}s recorded`;
     status(`${cues.length} keyframes  |  ${mime || '...'}`);
 
+    // Keep MS duration in sync as the recording grows
+    if (ms && ms.readyState === 'open') {
+        try { ms.duration = durSec; } catch(e) {}
+    }
+
     if (liveMode && cues.length >= 2) {
         scrub.value = cues.length - 1;
-        if (!abortCtrl) playFromCue(cues.length - 1);   // start once; don't restart on every poll
+        if (!ms) playFromCue(cues.length - 1); // initial start; stream loop handles the rest
     }
 }
 
@@ -172,86 +195,278 @@ liveBtn.onclick = () => {
     liveMode = true;
     liveBtn.classList.add('on');
     if (cues.length >= 2) {
-        const idx = cues.length - 1;
-        scrub.value = idx;
-        playFromCue(idx);
+        scrub.value = cues.length - 1;
+        playFromCue(cues.length - 1);
     }
 };
 
 video.addEventListener('timeupdate', () => {
     if (scrubActive) return;
     playPos.textContent = `${video.currentTime.toFixed(0)}s`;
-    // Keep scrub in sync with playback position during live streaming
     if (liveMode && cues.length) {
-        const ms = video.currentTime * 1000;
+        const ms_ = video.currentTime * 1000;
         for (let i = cues.length - 1; i >= 0; i--) {
-            if (cues[i].t <= ms) { scrub.value = i; break; }
+            if (cues[i].t <= ms_) { scrub.value = i; break; }
         }
     }
 });
 
-// -- Playback (no MSE) ---------------------------------------------------------
-// Live: stream from byte 0, seek video element to the live edge.
-// Seek: fetch init segment + data from the selected keyframe, play as a Blob.
-async function playFromCue(cueIdx) {
-    if (!videoBase || cues.length < 2) return;
-
-    if (abortCtrl) abortCtrl.abort();
-    abortCtrl = new AbortController();
-    const sig = abortCtrl.signal;
-
-    liveBtn.classList.toggle('on', liveMode);
-    scrub.value = cueIdx;
-    if (cues[cueIdx]) playPos.textContent = `${(cues[cueIdx].t / 1000).toFixed(0)}s`;
-
-    const prevSrc = video.src;
-    const cleanup = () => { if (prevSrc && prevSrc.startsWith('blob:')) URL.revokeObjectURL(prevSrc); };
-
-    if (liveMode) {
-        // Point directly at the stream; the server keeps the connection open as
-        // the recording grows.  Seek to the target time once metadata is known.
-        video.src = videoBase;
-        cleanup();
-        const targetSec = cues[cueIdx].t / 1000;
-        video.addEventListener('loadedmetadata', () => {
-            if (!sig.aborted) video.currentTime = targetSec || 1e9;
-        }, { once: true });
-        status('live');
-        return;
+// -- Find true init-segment boundary ------------------------------------------
+// MSE only wants EBML+SeekHead+Info+Tracks — no Cluster data.
+// Walk the EBML structure properly so we don't match 1F43B675 inside element
+// bodies (e.g. VP9 CodecPrivate data can contain those bytes by coincidence).
+function findFirstCluster(buf) {
+    const b = new Uint8Array(buf instanceof ArrayBuffer ? buf : buf.buffer, buf.byteOffset || 0);
+    const n = b.length;
+    function u32(i) { return ((b[i]<<24)|(b[i+1]<<16)|(b[i+2]<<8)|b[i+3])>>>0; }
+    // EBML variable-length integer; returns {val, len}, val===-1 means unknown size
+    function vint(i) {
+        if (i >= n) return null;
+        const v = b[i];
+        let w, val;
+        if      (v&0x80){w=1;val=v&0x7f;        if(val===0x7f)              val=-1;}
+        else if (v&0x40){w=2;val=((v&0x3f)<<8)|b[i+1]; if(val===0x3fff)     val=-1;}
+        else if (v&0x20){w=3;val=((v&0x1f)<<16)|(b[i+1]<<8)|b[i+2]; if(val===0x1fffff) val=-1;}
+        else if (v&0x10){w=4;val=((v&0x0f)<<24)|(b[i+1]<<16)|(b[i+2]<<8)|b[i+3]; if(val===0x0fffffff) val=-1;}
+        else             {w=8;val=-1;} // 5-8 byte VINTs treated as unknown
+        if (i+w > n) return null;
+        return {val, len:w};
     }
+    let pos = 0;
+    // Skip EBML header element (1A 45 DF A3)
+    if (pos+4 > n || u32(pos) !== 0x1A45DFA3) return n;
+    pos += 4;
+    const es = vint(pos); if (!es || es.val < 0) return n;
+    pos += es.len + es.val;
+    // Segment element (18 53 80 67)
+    if (pos+4 > n || u32(pos) !== 0x18538067) return n;
+    pos += 4;
+    const ss = vint(pos); if (!ss) return n;
+    pos += ss.len; // enter Segment body
+    // Walk top-level Segment elements — all use 4-byte IDs (start with 0x1x)
+    while (pos+4 < n) {
+        const eid = u32(pos);
+        if (eid === 0x1F43B675) return pos; // Cluster
+        pos += 4;
+        const sz = vint(pos);
+        if (!sz || sz.val < 0) return pos - 4; // unknown-size element = Cluster
+        pos += sz.len + sz.val;
+    }
+    return n;
+}
 
-    // Seek: prepend the init segment (bytes 0..cues[1].o) to data starting at
-    // the selected keyframe, then hand the concatenated bytes to the browser
-    // as a Blob URL.  No MSE required.
-    status(`loading from ${(cues[cueIdx].t / 1000).toFixed(1)}s...`);
+// -- MKV → WebM header patch ---------------------------------------------------
+// MSE requires DocType="webm"; live recordings often carry DocType="matroska".
+// The container structure is identical — only that 11-byte element differs.
+// We replace:  42 82 88 "matroska"          (DocType, len=8, "matroska")
+// with:        42 82 84 "webm" EC 82 00 00  (DocType, len=4, "webm" + 4-byte EBML Void)
+// Total bytes: 11 → 11, so no offsets elsewhere in the file change.
+function hexDump(buf, n) {
+    const b = new Uint8Array(buf instanceof ArrayBuffer ? buf : buf.buffer, buf.byteOffset || 0, Math.min(n, buf.byteLength || buf.length));
+    return Array.from(b).map(x => x.toString(16).padStart(2,'0')).join(' ');
+}
+
+function patchMkvToWebm(buf) {
+    const src = buf instanceof ArrayBuffer ? buf : buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    const b = new Uint8Array(src);
+    const hexStr = hexDump(b, 16);
+    console.log('init[0..15]: ' + hexStr);
+    status('init[0..15]: ' + hexStr);
+    for (let i = 0; i < Math.min(b.length - 11, 128); i++) {
+        if (b[i] === 0x42 && b[i+1] === 0x82 && b[i+2] === 0x88 &&
+            b[i+3] === 0x6D && b[i+4] === 0x61 && b[i+5] === 0x74 &&   // "mat"
+            b[i+6] === 0x72 && b[i+7] === 0x6F && b[i+8] === 0x73 &&   // "ros"
+            b[i+9] === 0x6B && b[i+10] === 0x61) {                      // "ka"
+            const p = new Uint8Array(src.slice(0));
+            p[i+2] = 0x84;                          // DocType length = 4
+            p[i+3] = 0x77; p[i+4] = 0x65;          // "we"
+            p[i+5] = 0x62; p[i+6] = 0x6D;          // "bm"
+            p[i+7] = 0xEC;                          // EBML Void element ID
+            p[i+8] = 0x82;                          // Void size VINT = 2
+            p[i+9] = 0x00; p[i+10] = 0x00;         // Void payload
+            console.log('patched matroska→webm at byte ' + i);
+            status('patched matroska→webm at byte ' + i);
+            return p.buffer;
+        }
+    }
+    console.log('no matroska DocType found — passing through as-is');
+    status('no matroska DocType found — passing through as-is');
+    return src;
+}
+
+// -- SourceBuffer append queue -------------------------------------------------
+// appendBuffer is async; only one call may be in flight at a time.
+function sbEnqueue(data) {
+    sbQueue.push(data);
+    sbDrain();
+}
+
+function sbDrain() {
+    if (!sb || sb.updating || !sbQueue.length) return;
     try {
-        const initEnd  = cues[1].o;
-        const startOff = cues[cueIdx].o;
-        // Fetch up to 2 MB past the last known cue to capture the rest of that cluster
-        const endOff   = cues[cues.length - 1].o + 2 * 1024 * 1024;
-
-        const initBuf = await rangedFetch(0, initEnd - 1, sig);
-        if (sig.aborted) return;
-        const dataBuf = await rangedFetch(startOff, endOff, sig);
-        if (sig.aborted) return;
-
-        const blobType = (mime || 'video/webm').replace('video/x-matroska', 'video/webm');
-        video.src = URL.createObjectURL(new Blob([initBuf, dataBuf], { type: blobType }));
-        cleanup();
-        video.play().catch(() => {});
-        status(`playing from ${(cues[cueIdx].t / 1000).toFixed(1)}s`);
+        sb.appendBuffer(sbQueue[0]);
+        sbQueue.shift();
     } catch(e) {
-        if (!sig.aborted) status('error: ' + (e.message || e));
+        if (e.name === 'QuotaExceededError' && video.currentTime > 15) {
+            // Evict everything more than 10 s behind the playhead; retry on updateend.
+            sb.remove(0, video.currentTime - 10);
+        } else {
+            sbQueue.shift(); // drop on unexpected errors
+        }
     }
 }
 
-async function rangedFetch(start, end, sig) {
-    const r = await fetch(videoBase, {
-        headers: { Range: `bytes=${start}-${end}` },
-        signal: sig
-    });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    return r.arrayBuffer();
+// -- Playback (MSE streaming) --------------------------------------------------
+// Each seek creates a fresh MediaSource + SourceBuffer. The init segment is
+// fetched once as a small range request; then a streaming fetch loop delivers
+// data chunks directly into the SourceBuffer with no intermediate blobs.
+// When the server closes the connection (its range-response cap) the loop
+// immediately re-fetches from the current byte offset — the browser never
+// sees a gap in the buffer.
+async function playFromCue(cueIdx) {
+    if (!videoBase || cues.length < 2) return;
+
+    if (streamCtrl) { streamCtrl.abort(); streamCtrl = null; }
+
+    liveBtn.classList.toggle('on', liveMode);
+    scrub.value = cueIdx;
+    const targetSec = cues[cueIdx].t / 1000;
+    playPos.textContent = `${targetSec.toFixed(0)}s`;
+
+    const initEnd  = cues[1].o;  // cues[0].o is always 0 (file start); cues[1].o is first cluster
+    const lookback = liveMode ? 2 : 1;
+    const startOff = cues[Math.max(0, cueIdx - lookback)].o;
+
+    console.log(`playFromCue ${cueIdx} initEnd=${initEnd} startOff=${startOff} mime="${mime}" MSE=${!!window.MediaSource}`);
+    status(`loading from ${targetSec.toFixed(1)}s...`);
+
+    if (!window.MediaSource) {
+        console.log('MediaSource not available on this browser');
+        status('MediaSource not supported');
+        return;
+    }
+
+    const thisMsRef = new MediaSource();
+    ms = thisMsRef;
+    sb = null;
+    sbQueue = [];
+
+    const prevSrc = video.src;
+    video.src = URL.createObjectURL(thisMsRef);
+    // Revoke the *previous* blob URL only; the new one must stay alive until
+    // the browser resolves it (sourceopen), otherwise code=4 fires immediately.
+    if (prevSrc && prevSrc.startsWith('blob:')) URL.revokeObjectURL(prevSrc);
+
+    thisMsRef.addEventListener('sourceopen', async () => {
+        if (ms !== thisMsRef) { status('MSE: superseded'); return; }
+
+        let mimeType = (mime || 'video/webm').replace('video/x-matroska', 'video/webm');
+        const supported = MediaSource.isTypeSupported(mimeType);
+        console.log(`MSE open | mime="${mimeType}" supported=${supported} initEnd=${initEnd}`);
+        status(`MSE open | mime="${mimeType}" supported=${supported} initEnd=${initEnd}`);
+        if (!supported) mimeType = 'video/webm';
+
+        try {
+            sb = thisMsRef.addSourceBuffer(mimeType);
+        } catch(e) {
+            status('addSourceBuffer failed: ' + e.message);
+            return;
+        }
+        sb.addEventListener('updateend', sbDrain);
+        try { thisMsRef.duration = cues[cues.length - 1].t / 1000; } catch(e) {}
+
+        const ctrl = new AbortController();
+        streamCtrl = ctrl;
+        const sig  = ctrl.signal;
+
+        status(`fetching init bytes=0-${initEnd - 1}`);
+        try {
+            const r = await fetch(videoBase, {
+                headers: { Range: `bytes=0-${initEnd - 1}` },
+                signal: sig,
+            });
+            if (!r.ok || sig.aborted) { status(`init fetch failed: ${r.status}`); return; }
+            const initBuf = await r.arrayBuffer();
+            // Strip cluster data — MSE init segment must be headers-only.
+            const clusterOff = findFirstCluster(initBuf);
+            const initOnly = initBuf.slice(0, clusterOff);
+            // Ensure streaming starts at a cluster boundary, not inside headers.
+            if (startOff < clusterOff) startOff = clusterOff;
+            console.log(`init ${initOnly.byteLength}b (cluster at ${clusterOff}), streaming from ${startOff}`);
+            status(`init ${initOnly.byteLength}b (cluster@${clusterOff}), streaming from ${startOff}`);
+            sbEnqueue(patchMkvToWebm(initOnly));
+        } catch(e) { status('init fetch error: ' + e.message); return; }
+
+        // Once the browser has parsed the codec metadata, seek and play.
+        video.addEventListener('loadedmetadata', () => {
+            if (ms !== thisMsRef) return;
+            status(`loadedmetadata, seeking to ${targetSec.toFixed(1)}s`);
+            video.currentTime = targetSec;
+            video.play().catch(e => status('play() error: ' + e.message));
+        }, { once: true });
+
+        // Stream data chunks directly into the SourceBuffer.
+        await streamData(thisMsRef, startOff, sig);
+    }, { once: true });
+
+    video.addEventListener('error', () => {
+        const e = video.error;
+        const msg = 'video error code=' + (e && e.code) + ' ' + (e && e.message);
+        console.log(msg);
+        status(msg);
+    }, { once: true });
+}
+
+async function streamData(thisMsRef, off, sig) {
+    // Cue offsets are MediaRecorder chunk boundaries, not Cluster boundaries.
+    // Scan the first bytes we receive for the Cluster element ID (1F 43 B6 75)
+    // and discard everything before it so MSE never sees a partial Cluster.
+    let synced = false;
+
+    while (!sig.aborted && ms === thisMsRef) {
+        if (thisMsRef.readyState !== 'open') break;
+
+        let r;
+        try {
+            r = await fetch(videoBase, {
+                headers: { Range: `bytes=${off}-${off + 0x3FFFFFF}` },
+                signal: sig,
+            });
+        } catch(e) { break; }
+        if (!r.ok || sig.aborted) break;
+
+        const reader = r.body.getReader();
+        while (true) {
+            let chunk;
+            try { chunk = await reader.read(); } catch(e) { break; }
+            if (chunk.done || sig.aborted) break;
+            off += chunk.value.byteLength;
+
+            let data = chunk.value;
+            if (!synced) {
+                // Find first Cluster ID in this chunk
+                let cp = -1;
+                for (let i = 0; i < data.length - 3; i++) {
+                    if (data[i]===0x1F && data[i+1]===0x43 && data[i+2]===0xB6 && data[i+3]===0x75) {
+                        cp = i; break;
+                    }
+                }
+                if (cp < 0) continue; // no cluster yet — discard and keep reading
+                console.log(`synced cluster at stream byte ${off - data.length + cp}`);
+                data = data.slice(cp);
+                synced = true;
+            }
+            sbEnqueue(data.slice());
+        }
+
+        if (sig.aborted) break;
+
+        // Server closed the connection. If we haven't reached the last known
+        // keyframe yet, re-fetch immediately. Otherwise wait for new cues.
+        const lastKnownOff = cues.length ? cues[cues.length - 1].o : 0;
+        if (off <= lastKnownOff) continue;
+        await new Promise(resolve => setTimeout(resolve, 2000));
+    }
 }
 </script>
 </body></html>
