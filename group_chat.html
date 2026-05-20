@@ -92,6 +92,26 @@ function fmt_ts(ts) {
     return new Date(Math.round(ts / 1000) * 1000).toLocaleString();
 }
 
+// Regex matches any URI with an explicit scheme (scheme://...).
+// Strips trailing punctuation that is likely sentence punctuation, not part of the URL.
+const URL_RE = /([a-zA-Z][a-zA-Z0-9+\-.]*:\/\/[^\s<>"]*[^\s<>".,:;!?()'"])/g;
+
+function append_text_with_links(el, text) {
+    let last = 0, m;
+    URL_RE.lastIndex = 0;
+    while ((m = URL_RE.exec(text)) !== null) {
+        if (m.index > last) el.appendChild(document.createTextNode(text.slice(last, m.index)));
+        const a = document.createElement('a');
+        a.href = m[1];
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        a.textContent = m[1];
+        el.appendChild(a);
+        last = m.index + m[1].length;
+    }
+    if (last < text.length) el.appendChild(document.createTextNode(text.slice(last)));
+}
+
 function render_messages() {
     const msgs = load_messages().sort((a, b) => a.timestamp - b.timestamp);
     const container = document.getElementById('messages');
@@ -119,7 +139,7 @@ function render_messages() {
 
         const text_el = document.createElement('span');
         text_el.className = 'msg-text';
-        text_el.textContent = ': ' + m.text;
+        append_text_with_links(text_el, ': ' + m.text);
 
         row.appendChild(meta);
         row.appendChild(text_el);
@@ -200,37 +220,76 @@ function stop_blink() {
 
 window.addEventListener('focus', stop_blink);
 
-function notify_new(msgs) {
+// Prefer Tauri native notifications; fall back to browser Notification API.
+const tauri_invoke = window.__TAURI__?.core?.invoke?.bind(window.__TAURI__.core) ?? null;
+function tauri_notif(cmd, args) { return tauri_invoke('plugin:notification|' + cmd, args ?? {}); }
+
+async function notif_permission_granted() {
+    if (tauri_invoke) return tauri_notif('is_permission_granted');
+    if ('Notification' in window) return Notification.permission === 'granted';
+    return false;
+}
+
+async function notif_request() {
+    if (tauri_invoke) return (await tauri_notif('request_permission')) === 'granted';
+    if ('Notification' in window) return (await Notification.requestPermission()) === 'granted';
+    return false;
+}
+
+function notif_send(title, body) {
+    if (tauri_invoke) {
+        tauri_notif('notify', { options: { title, body } });
+        return;
+    }
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    // Service worker notifications work even when Brave/Chrome has focus in another tab.
+    // Direct new Notification() is suppressed by Chromium in that case.
+    const ctrl = navigator.serviceWorker?.controller;
+    if (ctrl) {
+        ctrl.postMessage({ type: 'notify', title, body });
+    } else {
+        new Notification(title, { body });
+    }
+}
+
+async function notify_new(msgs) {
     if (!document.hidden) return;
     start_blink();
-    if (has_notif && Notification.permission === 'granted') {
+    if (await notif_permission_granted()) {
         const m = msgs[msgs.length - 1];
-        const short = m.pub_key.substring(0, 12) + '...';
-        new Notification('Group Chat: new message', {
-            body: short + ': ' + m.text.substring(0, 100),
-            tag: 'gc_new_msg',
-            renotify: true,
-        });
+        notif_send('Group Chat', m.pub_key.substring(0, 12) + '...: ' + m.text.substring(0, 100));
     }
 }
 
 const notif_btn = document.getElementById('notif_btn');
-const has_notif = ('Notification' in window);
-function update_notif_btn() {
-    if (!has_notif) { notif_btn.textContent = 'Notifications not supported'; notif_btn.disabled = true; return; }
-    if (Notification.permission === 'granted') {
-        notif_btn.textContent = 'Notifications on';
-        notif_btn.disabled = true;
-    } else if (Notification.permission === 'denied') {
-        notif_btn.textContent = 'Notifications blocked';
-        notif_btn.disabled = true;
-    }
+
+async function update_notif_btn() {
+    try {
+        if (!tauri_invoke && !('Notification' in window)) {
+            notif_btn.textContent = 'Notifications not supported'; notif_btn.disabled = true; return;
+        }
+        if (await notif_permission_granted()) {
+            notif_btn.textContent = 'Notifications on'; notif_btn.disabled = true;
+        } else if (!tauri_invoke && 'Notification' in window && Notification.permission === 'denied') {
+            notif_btn.textContent = 'Notifications blocked'; notif_btn.disabled = true;
+        }
+    } catch(e) { notif_btn.textContent = 'Notif err: ' + e; }
 }
 update_notif_btn();
 notif_btn.onclick = async () => {
-    if (!has_notif) return;
-    const perm = await Notification.requestPermission();
-    update_notif_btn();
+    notif_btn.textContent = 'Requesting...';
+    try {
+        const granted = await notif_request();
+        if (granted) {
+            notif_btn.textContent = 'Notifications on';
+            notif_btn.disabled = true;
+            notif_send('Group Chat', 'Notifications enabled');
+        } else {
+            notif_btn.textContent = 'Permission denied';
+        }
+    } catch(e) {
+        notif_btn.textContent = 'Error: ' + e;
+    }
 };
 
 function connect() {
@@ -312,6 +371,12 @@ document.getElementById('send_btn').onclick = send_message;
 document.getElementById('msg_input').addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send_message(); }
 });
+
+// Register service worker for browser notifications (bypasses Chromium's suppression
+// of new Notification() when the browser window has focus in another tab).
+if (!tauri_invoke && 'serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+}
 
 // Init: render stored messages immediately, then connect and start retransmit loop
 render_messages();
