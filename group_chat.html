@@ -220,19 +220,28 @@ function stop_blink() {
 
 window.addEventListener('focus', stop_blink);
 
-// Prefer Tauri native notifications; fall back to browser Notification API.
+// Prefer Tauri native notifications; fall back to browser service-worker notifications.
 const tauri_invoke = window.__TAURI__?.core?.invoke?.bind(window.__TAURI__.core) ?? null;
 function tauri_notif(cmd, args) { return tauri_invoke('plugin:notification|' + cmd, args ?? {}); }
 
-async function notif_permission_granted() {
-    if (tauri_invoke) return tauri_notif('is_permission_granted');
-    if ('Notification' in window) return Notification.permission === 'granted';
+const LS_NOTIF_OFF = 'gc_notif_off';
+function notif_user_wants() { return localStorage.getItem(LS_NOTIF_OFF) !== 'true'; }
+
+async function notif_os_granted() {
+    try {
+        if (tauri_invoke) return await tauri_notif('is_permission_granted');
+        if ('Notification' in window) return Notification.permission === 'granted';
+    } catch(e) {}
     return false;
 }
 
+async function notif_active() { return notif_user_wants() && await notif_os_granted(); }
+
 async function notif_request() {
-    if (tauri_invoke) return (await tauri_notif('request_permission')) === 'granted';
-    if ('Notification' in window) return (await Notification.requestPermission()) === 'granted';
+    try {
+        if (tauri_invoke) return (await tauri_notif('request_permission')) === 'granted';
+        if ('Notification' in window) return (await Notification.requestPermission()) === 'granted';
+    } catch(e) { throw e; }
     return false;
 }
 
@@ -242,8 +251,8 @@ function notif_send(title, body) {
         return;
     }
     if (!('Notification' in window) || Notification.permission !== 'granted') return;
-    // Service worker notifications work even when Brave/Chrome has focus in another tab.
-    // Direct new Notification() is suppressed by Chromium in that case.
+    // Service worker notifications are not suppressed by Chromium when another tab has focus.
+    // Direct new Notification() is suppressed in that case.
     const ctrl = navigator.serviceWorker?.controller;
     if (ctrl) {
         ctrl.postMessage({ type: 'notify', title, body });
@@ -255,7 +264,7 @@ function notif_send(title, body) {
 async function notify_new(msgs) {
     if (!document.hidden) return;
     start_blink();
-    if (await notif_permission_granted()) {
+    if (await notif_active()) {
         const m = msgs[msgs.length - 1];
         notif_send('Group Chat', m.pub_key.substring(0, 12) + '...: ' + m.text.substring(0, 100));
     }
@@ -268,21 +277,42 @@ async function update_notif_btn() {
         if (!tauri_invoke && !('Notification' in window)) {
             notif_btn.textContent = 'Notifications not supported'; notif_btn.disabled = true; return;
         }
-        if (await notif_permission_granted()) {
-            notif_btn.textContent = 'Notifications on'; notif_btn.disabled = true;
-        } else if (!tauri_invoke && 'Notification' in window && Notification.permission === 'denied') {
-            notif_btn.textContent = 'Notifications blocked'; notif_btn.disabled = true;
+        if (!tauri_invoke && 'Notification' in window && Notification.permission === 'denied') {
+            notif_btn.textContent = 'Notifications blocked by browser'; notif_btn.disabled = true; return;
         }
+        const os_granted = await notif_os_granted();
+        if (os_granted && notif_user_wants()) {
+            notif_btn.textContent = 'Notifications on -- tap to disable';
+        } else if (os_granted && !notif_user_wants()) {
+            notif_btn.textContent = 'Notifications off -- tap to enable';
+        } else {
+            notif_btn.textContent = 'Enable notifications';
+        }
+        notif_btn.disabled = false;
     } catch(e) { notif_btn.textContent = 'Notif err: ' + e; }
 }
 update_notif_btn();
+
 notif_btn.onclick = async () => {
-    notif_btn.textContent = 'Requesting...';
     try {
+        if (await notif_active()) {
+            // Currently on -- turn off
+            localStorage.setItem(LS_NOTIF_OFF, 'true');
+            notif_btn.textContent = 'Notifications off -- tap to enable';
+            return;
+        }
+        // Currently off -- turn on
+        localStorage.removeItem(LS_NOTIF_OFF);
+        const already = await notif_os_granted();
+        if (already) {
+            notif_btn.textContent = 'Notifications on -- tap to disable';
+            notif_send('Group Chat', 'Notifications enabled');
+            return;
+        }
+        notif_btn.textContent = 'Requesting...';
         const granted = await notif_request();
         if (granted) {
-            notif_btn.textContent = 'Notifications on';
-            notif_btn.disabled = true;
+            notif_btn.textContent = 'Notifications on -- tap to disable';
             notif_send('Group Chat', 'Notifications enabled');
         } else {
             notif_btn.textContent = 'Permission denied';
@@ -375,7 +405,7 @@ document.getElementById('msg_input').addEventListener('keydown', e => {
 // Register service worker for browser notifications (bypasses Chromium's suppression
 // of new Notification() when the browser window has focus in another tab).
 if (!tauri_invoke && 'serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    navigator.serviceWorker.register('sw.js').catch(e => console.warn('SW register failed:', e));
 }
 
 // Init: render stored messages immediately, then connect and start retransmit loop
