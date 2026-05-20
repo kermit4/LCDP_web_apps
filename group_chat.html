@@ -193,8 +193,7 @@ async function fetch_peers() {
         const r = await fetch('/status.json');
         const data = await r.json();
         const peers = (data.active_peers || [])
-            .map(p => strip_0x(p.pub))
-            .filter(p => p && p !== my_ed25519);
+            .map(p => strip_0x(p.pub));
         known_peers = new Set(peers);
         document.getElementById('peer_count').textContent = known_peers.size;
     } catch(e) {}
