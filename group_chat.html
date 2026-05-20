@@ -1,0 +1,251 @@
+<html>
+<head>
+<title>Group Chat</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: monospace; background: #f5f5f5; color: #111; display: flex; flex-direction: column; height: 100vh; }
+#topbar { padding: 6px 10px; background: #222; color: #eee; font-size: 13px; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
+#messages { flex: 1; overflow-y: auto; padding: 8px 10px; }
+.msg-row { margin: 3px 0; line-height: 1.5; word-break: break-word; }
+.msg-meta { font-weight: bold; cursor: default; font-size: 12px; }
+.msg-text { margin-left: 2px; }
+#inputbar { display: flex; padding: 6px; gap: 6px; background: #ddd; flex-shrink: 0; border-top: 1px solid #bbb; }
+#msg_input { flex: 1; font-family: monospace; font-size: 14px; padding: 6px 8px; border: 1px solid #aaa; border-radius: 3px; resize: none; height: 40px; }
+#send_btn { padding: 6px 16px; background: #3a7bd5; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 14px; flex-shrink: 0; }
+#send_btn:disabled { background: #aaa; cursor: default; }
+#statusbar { padding: 3px 10px; background: #e8e8e8; font-size: 11px; color: #555; border-top: 1px solid #ccc; flex-shrink: 0; }
+a { color: #3a7bd5; }
+</style>
+</head>
+<body>
+
+<div id=topbar>
+  <span>Group Chat &mdash; <b id=group_name_display>main</b></span>
+  <span><span id=peer_count>0</span> peers &nbsp;|&nbsp; <a href=/ style="color:#aaa;">status</a></span>
+</div>
+<div id=messages></div>
+<div id=statusbar>
+  <span id=status_text>Connecting...</span>
+  &nbsp;&nbsp;me: <span id=my_pub_display title="">...</span>
+</div>
+<div id=inputbar>
+  <textarea id=msg_input placeholder="Type a message — Enter to send, Shift+Enter for newline" disabled></textarea>
+  <button id=send_btn disabled>Send</button>
+</div>
+
+<script>
+const GROUP_NAME = 'main';
+const LS_KEY = 'gc_messages_' + GROUP_NAME;
+
+let my_ed25519 = null;
+let socket;
+let known_peers = new Set();
+let backoff_delay = 500;
+let backoff_timer = null;
+
+function strip_0x(s) { return (s && s.startsWith('0x')) ? s.slice(2) : s; }
+
+function load_messages() {
+    try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); } catch(e) { return []; }
+}
+
+function save_messages(msgs) {
+    localStorage.setItem(LS_KEY, JSON.stringify(msgs));
+}
+
+// Returns true if any were actually new
+function add_messages(new_msgs) {
+    const existing = load_messages();
+    const keys = new Set(existing.map(m => m.pub_key + ':' + m.timestamp));
+    let added = false;
+    for (const m of new_msgs) {
+        const k = m.pub_key + ':' + m.timestamp;
+        if (!keys.has(k)) {
+            existing.push(m);
+            keys.add(k);
+            added = true;
+        }
+    }
+    if (added) {
+        save_messages(existing);
+        render_messages();
+    }
+    return added;
+}
+
+function pub_color(pub_key) {
+    let h = 0;
+    for (let i = 0; i < pub_key.length; i++) {
+        h = ((h << 5) - h + pub_key.charCodeAt(i)) | 0;
+    }
+    return `hsl(${(h >>> 0) % 360}, 65%, 35%)`;
+}
+
+function fmt_ts(ts) {
+    // Round to nearest second, then format in local time
+    return new Date(Math.round(ts / 1000) * 1000).toLocaleString();
+}
+
+function render_messages() {
+    const msgs = load_messages().sort((a, b) => a.timestamp - b.timestamp);
+    const container = document.getElementById('messages');
+    const at_bottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 30;
+    container.innerHTML = '';
+    for (const m of msgs) {
+        const row = document.createElement('div');
+        row.className = 'msg-row';
+
+        const meta = document.createElement('span');
+        meta.className = 'msg-meta';
+        meta.style.color = pub_color(m.pub_key);
+        meta.title = m.pub_key;
+        meta.textContent = '[' + fmt_ts(m.timestamp) + '] ' + m.pub_key.substring(0, 16) + '…';
+
+        const text_el = document.createElement('span');
+        text_el.className = 'msg-text';
+        text_el.textContent = ': ' + m.text;
+
+        row.appendChild(meta);
+        row.appendChild(text_el);
+        container.appendChild(row);
+    }
+    if (at_bottom) container.scrollTop = container.scrollHeight;
+}
+
+function my_msgs() {
+    if (!my_ed25519) return [];
+    return load_messages().filter(m => m.pub_key === my_ed25519);
+}
+
+function send_to_peer(peer_pub) {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    const msgs = my_msgs();
+    if (msgs.length === 0) return;
+    socket.send(JSON.stringify([{Forward:{
+        to_ed25519: peer_pub,
+        messages: msgs.map(m => ({GroupChatMessage:{
+            group_name: m.group_name,
+            text: m.text,
+            timestamp: m.timestamp
+        }}))
+    }}]));
+}
+
+function send_to_all_peers() {
+    for (const peer of known_peers) {
+        send_to_peer(peer);
+    }
+}
+
+function schedule_backoff() {
+    clearTimeout(backoff_timer);
+    backoff_delay = 500;
+    tick_backoff();
+}
+
+function tick_backoff() {
+    backoff_timer = setTimeout(() => {
+        send_to_all_peers();
+        backoff_delay *= 1.5;
+        tick_backoff();
+    }, backoff_delay);
+}
+
+async function fetch_peers() {
+    try {
+        const r = await fetch('/status.json');
+        const data = await r.json();
+        const peers = (data.active_peers || [])
+            .map(p => strip_0x(p.pub))
+            .filter(p => p && p !== my_ed25519);
+        known_peers = new Set(peers);
+        document.getElementById('peer_count').textContent = known_peers.size;
+    } catch(e) {}
+}
+
+function connect() {
+    const url = new URL('/wt', window.location.href);
+    url.protocol = url.protocol.replace('http', 'ws');
+    socket = new WebSocket(url);
+    //socket = new WebSocket('ws://localhost:24255/wt');
+    socket.onclose = () => {
+        document.getElementById('status_text').textContent = 'Disconnected — reconnecting...';
+        setTimeout(connect, 200);
+    };
+    socket.onopen = () => {
+        document.getElementById('status_text').textContent = 'Connected';
+        let work = Promise.resolve();
+        socket.onmessage = async (event) => {
+            work = work.then(async () => {
+                let outer;
+                try { outer = JSON.parse(event.data); } catch(e) { return; }
+                let messages, forwarded = false, src = null;
+                if (outer[0] && 'Forwarded' in outer[0]) {
+                    src = outer[0].Forwarded.from_ed25519;
+                    forwarded = true;
+                    try { messages = JSON.parse(outer[0].Forwarded.messages); } catch(e) { return; }
+                } else {
+                    messages = outer;
+                }
+                for (const msg of messages) {
+                    if (!forwarded && 'YourEd25519' in msg) {
+                        my_ed25519 = msg.YourEd25519.ed25519;
+                        on_identity_known();
+                    }
+                    if (!forwarded && 'PleaseSignYourPub' in msg) {
+                        my_ed25519 = msg.PleaseSignYourPub.ed25519;
+                        on_identity_known();
+                    }
+                    if (forwarded && 'GroupChatMessage' in msg) {
+                        const gcm = msg.GroupChatMessage;
+                        if (gcm.group_name === GROUP_NAME) {
+                            add_messages([{
+                                pub_key: src,
+                                text: gcm.text,
+                                timestamp: gcm.timestamp,
+                                group_name: gcm.group_name
+                            }]);
+                        }
+                    }
+                }
+            });
+        };
+    };
+}
+
+function on_identity_known() {
+    const el = document.getElementById('my_pub_display');
+    el.textContent = my_ed25519.substring(0, 16) + '…';
+    el.title = my_ed25519;
+    document.getElementById('msg_input').disabled = false;
+    document.getElementById('send_btn').disabled = false;
+    render_messages();
+    fetch_peers();
+}
+
+function send_message() {
+    const input = document.getElementById('msg_input');
+    const text = input.value.trim();
+    if (!text || !my_ed25519) return;
+    const m = { pub_key: my_ed25519, text, timestamp: Date.now(), group_name: GROUP_NAME };
+    add_messages([m]);
+    input.value = '';
+    send_to_all_peers();
+    schedule_backoff();
+}
+
+document.getElementById('send_btn').onclick = send_message;
+document.getElementById('msg_input').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send_message(); }
+});
+
+// Init: render stored messages immediately, then connect and start retransmit loop
+render_messages();
+connect();
+schedule_backoff();
+fetch_peers();
+setInterval(fetch_peers, 8000);
+</script>
+</body>
+</html>
