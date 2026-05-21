@@ -218,11 +218,17 @@ function stop_blink() {
     document.title = original_title;
 }
 
-window.addEventListener('focus', stop_blink);
+let win_focused = document.hasFocus();
+window.addEventListener('focus', () => { win_focused = true;  stop_blink(); });
+window.addEventListener('blur',  () => { win_focused = false; });
 
-// Prefer Tauri native notifications; fall back to browser service-worker notifications.
-const tauri_invoke = window.__TAURI__?.core?.invoke?.bind(window.__TAURI__.core) ?? null;
+// Tauri IPC -- present on Android (Tauri APK), null in a plain browser.
+const tauri_invoke =
+    window.__TAURI_INTERNALS__?.invoke?.bind(window.__TAURI_INTERNALS__) ??
+    window.__TAURI__?.core?.invoke?.bind(window.__TAURI__.core) ??
+    null;
 function tauri_notif(cmd, args) { return tauri_invoke('plugin:notification|' + cmd, args ?? {}); }
+
 
 const LS_NOTIF_OFF = 'gc_notif_off';
 function notif_user_wants() { return localStorage.getItem(LS_NOTIF_OFF) !== 'true'; }
@@ -262,7 +268,7 @@ function notif_send(title, body) {
 }
 
 async function notify_new(msgs) {
-    if (!document.hidden) return;
+    if (!tauri_invoke && win_focused && !document.hidden) return;
     start_blink();
     if (await notif_active()) {
         const m = msgs.reduce((a, b) => a.timestamp > b.timestamp ? a : b);
