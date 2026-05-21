@@ -80,12 +80,19 @@ function add_messages(new_msgs) {
     return added;
 }
 
-function pub_color(pub_key) {
-    let h = 0;
-    for (let i = 0; i < pub_key.length; i++) {
-        h = ((h << 5) - h + pub_key.charCodeAt(i)) | 0;
+// nibble & 7 → CSS color, matching the ANSI 30-37 palette used in the CLI
+const NIBBLE_COLORS = ['#111','#c0392b','#27ae60','#b7950b','#2471a3','#7d3c98','#148f77','#888'];
+
+function colored_pub_prefix(pub_key) {
+    const wrap = document.createElement('span');
+    for (let i = 0; i < 5 && i < pub_key.length; i++) {
+        const s = document.createElement('span');
+        s.style.color = NIBBLE_COLORS[parseInt(pub_key[i], 16) & 7];
+        s.textContent = pub_key[i];
+        wrap.appendChild(s);
     }
-    return `hsl(${(h >>> 0) % 360}, 65%, 35%)`;
+    wrap.appendChild(document.createTextNode('...'));
+    return wrap;
 }
 
 function fmt_ts(ts) {
@@ -124,7 +131,6 @@ function render_messages() {
 
         const meta = document.createElement('span');
         meta.className = 'msg-meta';
-        meta.style.color = pub_color(m.pub_key);
 
         const ts_span = document.createElement('span');
         ts_span.textContent = '[' + fmt_ts(m.timestamp) + '] ';
@@ -133,7 +139,7 @@ function render_messages() {
         key_link.href = 'chat.html?ed25519=' + m.pub_key;
         key_link.target = '_blank';
         key_link.title = m.pub_key;
-        key_link.textContent = m.pub_key.substring(0, 16) + '...';
+        key_link.appendChild(colored_pub_prefix(m.pub_key));
 
         meta.appendChild(ts_span);
         meta.appendChild(key_link);
