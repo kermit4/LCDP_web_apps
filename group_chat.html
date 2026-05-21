@@ -86,8 +86,15 @@ const NIBBLE_COLORS = ['#111','#c0392b','#27ae60','#b7950b','#2471a3','#7d3c98',
 function colored_pub_prefix(pub_key) {
     const wrap = document.createElement('span');
     for (let i = 0; i < 5 && i < pub_key.length; i++) {
+        const nibble = parseInt(pub_key[i], 16);
+        const color = NIBBLE_COLORS[nibble & 7];
         const s = document.createElement('span');
-        s.style.color = NIBBLE_COLORS[parseInt(pub_key[i], 16) & 7];
+        if (nibble & 8) {
+            s.style.backgroundColor = color;
+            s.style.color = '#fff';
+        } else {
+            s.style.color = color;
+        }
         s.textContent = pub_key[i];
         wrap.appendChild(s);
     }
