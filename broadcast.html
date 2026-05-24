@@ -77,6 +77,7 @@ const zoomSlider    = document.getElementById('zoomSlider');
 const echoCancelBtn = document.getElementById('echoCancelBtn');
 const noiseBtn      = document.getElementById('noiseBtn');
 const gainBtn       = document.getElementById('gainBtn');
+const autoNow = new URLSearchParams(location.search).has('now');
 ws_url_input.value  = 'ws://localhost:24255/wt';
 ws_url_input.onchange = () => { if (socket) socket.close(); };
 
@@ -154,9 +155,9 @@ function setVU(v) {
 setVU(0);
 
 // -- audio/video state --------------------------------------------------------
-let echoCancel    = true;
-let noiseSuppress = true;
-let autoGain      = true;
+let echoCancel    = !autoNow;
+let noiseSuppress = !autoNow;
+let autoGain      = !autoNow;
 let audioMuted    = false;
 let videoMuted    = false;
     echoCancelBtn.textContent = echoCancel ? 'Echo: On' : 'Echo: Off';
@@ -426,7 +427,7 @@ function setRecordingButtons(recording) {
     stopBtn.disabled  = !recording;
 }
 
-startBtn.onclick = async () => {
+async function startrecord() {
     const ok = await startCameraAndMic();
     if (!ok) return;
 
@@ -577,7 +578,8 @@ startBtn.onclick = async () => {
     setRecordingButtons(true);
     showStreamUrl();
     log_always('recording started  id:', recordingUUID, '  codec:', mimeType || '(browser default)');
-};
+}
+startBtn.onclick = startrecord;
 
 stopBtn.onclick = () => {
     if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
@@ -749,5 +751,6 @@ connect();
 // user gesture for getUserMedia this will silently fail and the button click
 // will trigger it instead (startCameraAndMic guards with "if (camStream) return").
 startCameraAndMic().catch(() => {});
+if (autoNow) startrecord();
 </script>
 </body></html>
