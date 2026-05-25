@@ -163,7 +163,6 @@ function render_messages() {
 }
 
 function my_msgs() {
-    if (!my_ed25519) return [];
     return load_messages().filter(m => m.pub_key === my_ed25519);
 }
 
@@ -201,10 +200,14 @@ function tick_backoff() {
     }, backoff_delay);
 }
 
-async function fetch_peers() {
+async function fetch_status() {
     try {
         const r = await fetch('/status.json');
         const data = await r.json();
+        if (!my_ed25519 && data.public_key) {
+            my_ed25519 = strip_0x(data.public_key);
+            on_identity_known();
+        }
         const peers = (data.active_peers || [])
             .map(p => strip_0x(p.pub));
         known_peers = new Set(peers);
@@ -370,14 +373,6 @@ function connect() {
                 }
                 const chat_batch = [];
                 for (const msg of messages) {
-                    if (!forwarded && 'YourEd25519' in msg) {
-                        my_ed25519 = msg.YourEd25519.ed25519;
-                        on_identity_known();
-                    }
-                    if (!forwarded && 'PleaseSignYourPub' in msg) {
-                        my_ed25519 = msg.PleaseSignYourPub.ed25519;
-                        on_identity_known();
-                    }
                     if (forwarded && 'GroupChatMessage' in msg) {
                         const gcm = msg.GroupChatMessage;
                         if (gcm.group_name === GROUP_NAME) {
@@ -403,13 +398,12 @@ function on_identity_known() {
     document.getElementById('msg_input').disabled = false;
     document.getElementById('send_btn').disabled = false;
     render_messages();
-    fetch_peers();
 }
 
 function send_message() {
     const input = document.getElementById('msg_input');
     const text = input.value.trim();
-    if (!text || !my_ed25519) return;
+    if (!text) return;
     const m = { pub_key: my_ed25519, text, timestamp: Date.now(), group_name: GROUP_NAME };
     add_messages([m]);
     input.value = '';
@@ -432,8 +426,8 @@ if (!tauri_invoke && 'serviceWorker' in navigator) {
 render_messages();
 connect();
 schedule_backoff();
-fetch_peers();
-setInterval(fetch_peers, 8000);
+fetch_status();
+setInterval(fetch_status, 8000);
 </script>
 </body>
 </html>
