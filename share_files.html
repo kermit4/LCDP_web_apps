@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Share Files</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: monospace;
+  background: #111;
+  color: #ccc;
+  padding: 1rem;
+  min-height: 100vh;
+}
+h1 { color: #4af; margin-bottom: 1rem; font-size: 1.2rem; }
+a { color: #4af; }
+#status-bar {
+  display: flex;
+  gap: 1.5rem;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 4px;
+  padding: .6rem 1rem;
+  margin-bottom: 1rem;
+  font-size: .85rem;
+  flex-wrap: wrap;
+}
+.stat-item { display: flex; flex-direction: column; }
+.stat-label { color: #666; font-size: .75rem; }
+.stat-value { color: #eee; }
+#drop-zone {
+  border: 2px dashed #444;
+  border-radius: 6px;
+  padding: 2rem;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color .2s, background .2s;
+  margin-bottom: 1rem;
+  background: #151515;
+}
+#drop-zone.over { border-color: #4af; background: #0d1f2d; }
+#drop-zone p { color: #555; margin-bottom: .6rem; }
+#drop-zone input[type=file] { display: none; }
+#drop-zone label {
+  display: inline-block;
+  background: #1e3a50;
+  color: #4af;
+  border: 1px solid #4af;
+  padding: .4rem 1rem;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: .9rem;
+}
+#drop-zone label:hover { background: #264f6e; }
+#queue {
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  margin-bottom: 1rem;
+}
+.file-row {
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
+  border-radius: 4px;
+  padding: .5rem .75rem;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: .3rem .8rem;
+  align-items: center;
+}
+.file-name { color: #ddd; word-break: break-all; }
+.file-size { color: #666; font-size: .8rem; white-space: nowrap; }
+.file-status { color: #888; font-size: .8rem; grid-column: 1 / -1; }
+.progress-bar {
+  grid-column: 1 / -1;
+  height: 4px;
+  background: #2a2a2a;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: #4af;
+  transition: width .15s;
+  width: 0%;
+}
+.file-link { grid-column: 1 / -1; font-size: .8rem; }
+.file-link a { color: #7df; word-break: break-all; }
+.status-done .file-name { color: #9f9; }
+.status-error .file-name { color: #f77; }
+#history {
+  margin-top: 1rem;
+}
+#history h2 { color: #888; font-size: .9rem; margin-bottom: .5rem; }
+.history-entry {
+  font-size: .8rem;
+  padding: .25rem 0;
+  border-bottom: 1px solid #1f1f1f;
+  display: flex;
+  gap: .5rem;
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+.history-entry .h-name { color: #aaa; }
+.history-entry .h-hash { font-size: .75rem; color: #555; word-break: break-all; }
+#back { font-size: .85rem; margin-bottom: 1rem; display: inline-block; }
+</style>
+</head>
+<body>
+
+<a href="/" id="back">← back to status</a>
+<h1>Share Files</h1>
+
+<div id="status-bar">
+  <div class="stat-item">
+    <span class="stat-label">free disk</span>
+    <span class="stat-value" id="s-disk">…</span>
+  </div>
+  <div class="stat-item">
+    <span class="stat-label">active peers</span>
+    <span class="stat-value" id="s-peers">…</span>
+  </div>
+  <div class="stat-item">
+    <span class="stat-label">version</span>
+    <span class="stat-value" id="s-version">…</span>
+  </div>
+  <div class="stat-item">
+    <span class="stat-label">public key</span>
+    <span class="stat-value" id="s-key" style="font-size:.7rem;color:#555">…</span>
+  </div>
+</div>
+
+<div id="drop-zone">
+  <p>drag files here, or</p>
+  <label>pick files<input type="file" id="file-input" multiple></label>
+  <p style="margin-top:.6rem;font-size:.75rem;color:#444">
+    files are hashed with SHA-256 and stored in cjp2p/public/ &mdash; accessible by hash URL
+  </p>
+</div>
+
+<div id="queue"></div>
+<div id="history"><h2>uploaded this session</h2></div>
+
+<script>
+const PORT = location.port || 24255;
+const BASE = `${location.protocol}//${location.hostname}:${PORT}`;
+let history = [];
+
+function fmtBytes(b) {
+  if (b >= 1<<30) return (b/(1<<30)).toFixed(1)+' GB';
+  if (b >= 1<<20) return (b/(1<<20)).toFixed(1)+' MB';
+  if (b >= 1<<10) return (b/(1<<10)).toFixed(1)+' KB';
+  return b+' B';
+}
+
+async function refreshStatus() {
+  try {
+    const r = await fetch('/status.json');
+    const j = await r.json();
+    document.getElementById('s-disk').textContent =
+      j.free_disk_bytes != null ? fmtBytes(j.free_disk_bytes) : 'n/a';
+    document.getElementById('s-peers').textContent =
+      `${j.active_peer_count} fast / ${j.total_peers} total`;
+    document.getElementById('s-version').textContent = j.version || 'n/a';
+    document.getElementById('s-key').textContent =
+      (j.public_key || '').slice(0, 16) + '…';
+  } catch(e) {}
+}
+refreshStatus();
+setInterval(refreshStatus, 8000);
+
+function uploadFile(file) {
+  const queue = document.getElementById('queue');
+  const row = document.createElement('div');
+  row.className = 'file-row';
+  row.innerHTML = `
+    <span class="file-name">${file.name}</span>
+    <span class="file-size">${fmtBytes(file.size)}</span>
+    <div class="progress-bar"><div class="progress-fill" id="pf-${file.name.replace(/\W/g,'_')+Date.now()}"></div></div>
+    <span class="file-status" id="fs-${file.name.replace(/\W/g,'_')+Date.now()}">waiting…</span>
+  `;
+  // Use stable IDs via the row itself
+  const fill = row.querySelector('.progress-fill');
+  const status = row.querySelector('.file-status');
+  queue.prepend(row);
+
+  const xhr = new XMLHttpRequest();
+  const start = Date.now();
+
+  xhr.upload.addEventListener('progress', e => {
+    if (!e.lengthComputable) return;
+    const pct = (e.loaded / e.total * 100).toFixed(1);
+    fill.style.width = pct + '%';
+    const elapsed = (Date.now() - start) / 1000;
+    const speed = e.loaded / elapsed;
+    const remaining = (e.total - e.loaded) / speed;
+    status.textContent = `${pct}%  ${fmtBytes(speed)}/s  ETA ${remaining < 60 ? remaining.toFixed(0)+'s' : (remaining/60).toFixed(1)+'m'}`;
+  });
+
+  xhr.addEventListener('load', () => {
+    if (xhr.status === 200) {
+      let sha256 = '';
+      try { sha256 = JSON.parse(xhr.responseText).sha256; } catch(e) {}
+      fill.style.width = '100%';
+      fill.style.background = '#4f9';
+      status.textContent = 'done';
+      row.classList.add('status-done');
+      const linkDiv = document.createElement('div');
+      linkDiv.className = 'file-link';
+      const url = `${BASE}/${sha256}`;
+      linkDiv.innerHTML = `<a href="${url}" target="_blank">${url}</a>`;
+      row.appendChild(linkDiv);
+      addHistory(file.name, sha256);
+      refreshStatus();
+    } else {
+      status.textContent = `error ${xhr.status}: ${xhr.responseText}`;
+      row.classList.add('status-error');
+    }
+  });
+
+  xhr.addEventListener('error', () => {
+    status.textContent = 'network error';
+    row.classList.add('status-error');
+  });
+
+  xhr.open('POST', '/upload');
+  xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+  xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
+  xhr.send(file);
+}
+
+function handleFiles(files) {
+  for (const f of files) uploadFile(f);
+}
+
+document.getElementById('file-input').addEventListener('change', e => {
+  handleFiles(e.target.files);
+  e.target.value = '';
+});
+
+const dz = document.getElementById('drop-zone');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('over'));
+dz.addEventListener('drop', e => {
+  e.preventDefault();
+  dz.classList.remove('over');
+  handleFiles(e.dataTransfer.files);
+});
+
+function addHistory(name, sha256) {
+  history.push({name, sha256});
+  const hist = document.getElementById('history');
+  const entry = document.createElement('div');
+  entry.className = 'history-entry';
+  const url = `${BASE}/${sha256}`;
+  entry.innerHTML = `<span class="h-name">${name}</span><a class="h-hash" href="${url}" target="_blank">${sha256}</a>`;
+  hist.appendChild(entry);
+}
+</script>
+</body>
+</html>
