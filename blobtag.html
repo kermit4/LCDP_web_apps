@@ -1,7 +1,9 @@
-<html><head><title>Blob Tag</title></head>
+<html><head><title>Blob Tag</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
 <body>
-<p>Their ed25519: <input id=their_ed25519 size=80>
-<p>Share this link: <a id=link href=""></a>
+<p>Their ed25519 addr: <input id=their_ed25519 size=80>
+<p>Share this link with your opponent: <a id=link href=""></a>
 <p>WebSocket URL: <input id=ws_url size=60>
 <p><a href=/>return to network status page</a>
 <p>
@@ -11,13 +13,11 @@
 <div id=canvas_wrap style="display:inline-block;">
 <canvas id=canvas width=800 height=500 style="border:2px solid #333; background:#fff; cursor:none; display:block;"></canvas>
 </div>
-<p>
-<div id=ping_stats style="font-family:monospace;font-size:13px;color:#444;">RTT -- min: --&nbsp; max: --&nbsp; avg: --</div>
 
 <style>
 body { background:#f5f5f5; color:#111; font-family:monospace; }
-#canvas_wrap { display:block; margin:0 auto; text-align:center; }
-canvas { display:block; margin:0 auto; }
+#canvas_wrap { display:block; margin:0 auto; text-align:center; max-width:100%; }
+canvas { display:block; margin:0 auto; max-width:100%; height:auto; aspect-ratio:800/500; }
 #canvas_wrap:fullscreen {
     display:flex; align-items:center; justify-content:center;
     width:100vw; height:100vh; background:#fff;
@@ -26,353 +26,262 @@ canvas { display:block; margin:0 auto; }
     display:-webkit-flex; -webkit-align-items:center; -webkit-justify-content:center;
     width:100vw; height:100vh; background:#fff;
 }
-#canvas_wrap:fullscreen canvas,
-#canvas_wrap:-webkit-full-screen canvas { border:none !important; }
+#canvas_wrap:fullscreen canvas, #canvas_wrap:-webkit-full-screen canvas {
+    border:none !important;
+}
 </style>
 
 <script>
-const W = 800, H = 500, BLOB_R = 18;
+const W = 800, H = 500;
+const BLOB_R = 18;
+const TAG_COOLDOWN = 500;
+const SCORE_H = 60; // reserved top area for scores
 
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
-const their_ed25519_el = document.getElementById('their_ed25519');
+const their_input = document.getElementById('their_ed25519');
 const link_el = document.getElementById('link');
-const status_msg = document.getElementById('status_msg');
+const status_el = document.getElementById('status_msg');
 const fs_btn = document.getElementById('fs_btn');
 const canvas_wrap = document.getElementById('canvas_wrap');
-const ping_stats = document.getElementById('ping_stats');
 const ws_url_input = document.getElementById('ws_url');
+
 ws_url_input.value = 'ws://localhost:24255/wt';
 ws_url_input.onchange = () => { if (socket) socket.close(); };
 
 let my_ed25519 = null;
+let their_ed25519 = null;
 let socket;
 
-// Game state
 let myX = W / 2, myY = H / 2;
 let theirX = W / 2, theirY = H / 2;
-let myIt = false;
-let theirIt = false;
-let itInitialized = false;
-let lastTagTime = 0;
+let myIt = null;
+let itDetermined = false;
 let myScore = 0, theirScore = 0;
-let opponentConnected = false;
-let lastPosSend = 0;
+let lastTagTime = 0;
+let lastSendTime = 0;
 
-// Assign "it" exactly once, deterministically: lower key string starts as "it".
-// Both sides independently compute the same result, so there is no conflict.
-function initItState() {
-    if (itInitialized || !my_ed25519 || !their_ed25519_el.value) return;
-    myIt = my_ed25519 < their_ed25519_el.value;
-    theirIt = !myIt;
-    // Start on opposite sides so blobs don't immediately overlap
-    myX = myIt ? W * 0.25 : W * 0.75;
-    myY = H / 2;
-    // Grace period: don't allow tags for 1s after game start
-    lastTagTime = Date.now();
-    itInitialized = true;
-    updateStatus();
-}
-
-// RTT chart: one pixel column = 200ms real time, full height = 1000ms RTT
-const CHART_MS_PER_COL = 200;
-const chartData = new Array(W).fill(null);
-let chartCursor = Math.floor(Date.now() / CHART_MS_PER_COL) % W;
-let pingSeq = 0;
-const pendingPings = new Map();
-let lastPingAt = 0;
-
-function chartCol(t) { return Math.floor(t / CHART_MS_PER_COL) % W; }
-
-function advanceChartCursor() {
-    const nowCol = chartCol(Date.now());
-    if (nowCol === chartCursor) return;
-    let c = chartCursor;
-    while (c !== nowCol) { c = (c + 1) % W; chartData[c] = null; }
-    chartData[(nowCol + 1) % W] = null;
-    chartCursor = nowCol;
-}
-
-function maybeSendPing() {
-    if (!their_ed25519_el.value || !socket || socket.readyState !== WebSocket.OPEN) return;
-    const now = Date.now();
-    if (now - lastPingAt < 200) return;
-    lastPingAt = now;
-    const seq = ++pingSeq;
-    pendingPings.set(seq, now);
-    socket.send(JSON.stringify([{Forward:{
-        to_ed25519: their_ed25519_el.value,
-        messages: [{PongPing:{seq, t: now}}]
-    }}]));
-    for (const [s, t] of pendingPings) { if (now - t > 5000) pendingPings.delete(s); }
-}
-
-function update_links() {
+function update_link() {
     if (!my_ed25519) return;
     const url = 'http://localhost:24255' + location.pathname + '?ed25519=' + my_ed25519;
     link_el.href = url;
     link_el.textContent = url;
 }
 
+function determine_it() {
+    if (itDetermined || !my_ed25519 || !their_ed25519) return;
+    itDetermined = true;
+    myIt = (my_ed25519 < their_ed25519);
+    myX = myIt ? W * 0.25 : W * 0.75;
+    myY = H / 2;
+    theirX = myIt ? W * 0.75 : W * 0.25;
+    theirY = H / 2;
+    lastTagTime = Date.now();
+    status_el.textContent = myIt ? 'You are IT! Catch the red blob!' : 'Run! They are chasing you!';
+}
+
 function set_their_ed25519(v) {
-    their_ed25519_el.value = v;
-    update_links();
-    initItState();
+    their_input.value = v;
+    their_ed25519 = v;
+    determine_it();
 }
 
-function updateStatus() {
-    if (!opponentConnected) { status_msg.textContent = 'Waiting for opponent...'; return; }
-    status_msg.textContent = myIt ? "You're IT -- chase them!" : "They're IT -- run away!";
-}
-
-// Mouse / touch: move my blob to cursor position on canvas
-function canvasToGame(clientX, clientY) {
-    const r = canvas.getBoundingClientRect();
-    return { x: (clientX - r.left) * W / r.width, y: (clientY - r.top) * H / r.height };
-}
-
-function moveMe(cx, cy) {
-    myX = Math.max(BLOB_R, Math.min(W - BLOB_R, cx));
-    myY = Math.max(BLOB_R, Math.min(H - BLOB_R, cy));
-}
-
-canvas.addEventListener('mousemove', e => {
-    const p = canvasToGame(e.clientX, e.clientY); moveMe(p.x, p.y);
+their_input.addEventListener('input', () => {
+    their_ed25519 = their_input.value;
+    determine_it();
 });
-canvas.addEventListener('touchstart', e => {
-    e.preventDefault();
-    const p = canvasToGame(e.touches[0].clientX, e.touches[0].clientY); moveMe(p.x, p.y);
-}, {passive: false});
+
+function toGame(clientX, clientY) {
+    const r = canvas.getBoundingClientRect();
+    return {
+        x: Math.max(BLOB_R, Math.min(W - BLOB_R, (clientX - r.left) * W / r.width)),
+        y: Math.max(SCORE_H + BLOB_R, Math.min(H - BLOB_R, (clientY - r.top) * H / r.height))
+    };
+}
+
+let touchGrace = 0;
+canvas.addEventListener('mousemove', e => {
+    if (Date.now() < touchGrace) return;
+    const p = toGame(e.clientX, e.clientY);
+    myX = p.x; myY = p.y;
+});
 canvas.addEventListener('touchmove', e => {
     e.preventDefault();
-    const p = canvasToGame(e.touches[0].clientX, e.touches[0].clientY); moveMe(p.x, p.y);
+    touchGrace = Date.now() + 400;
+    const p = toGame(e.touches[0].clientX, e.touches[0].clientY);
+    myX = p.x; myY = p.y;
 }, {passive: false});
 
-// Send my position at up to 60fps
-function sendPos() {
-    if (!their_ed25519_el.value || !socket || socket.readyState !== WebSocket.OPEN) return;
+function send_pos() {
+    if (!their_ed25519 || !socket || socket.readyState !== WebSocket.OPEN) return;
     const now = Date.now();
-    if (now - lastPosSend < 16) return;
-    lastPosSend = now;
-    socket.send(JSON.stringify([{Forward:{
-        to_ed25519: their_ed25519_el.value,
-        messages: [{BlobPos:{x: myX, y: myY, it: myIt, score_me: myScore, score_them: theirScore}}]
+    if (now - lastSendTime < 16) return;
+    lastSendTime = now;
+    socket.send(JSON.stringify([{Forward: {
+        to_ed25519: their_ed25519,
+        messages: [{BlobPos: {x: myX, y: myY, it: myIt === true, score_me: myScore, score_them: theirScore}}]
     }}]));
 }
 
-function sendTag() {
-    if (!their_ed25519_el.value || !socket || socket.readyState !== WebSocket.OPEN) return;
-    socket.send(JSON.stringify([{Forward:{
-        to_ed25519: their_ed25519_el.value,
-        messages: [{BlobTag:{}}]
+function send_tag() {
+    if (!their_ed25519 || !socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify([{Forward: {
+        to_ed25519: their_ed25519,
+        messages: [{BlobTag: {}}]
     }}]));
 }
 
-// Tag detection: only I can fire when I'm "it". 500ms cooldown prevents rapid re-tags.
-function checkTag() {
-    if (!myIt || !opponentConnected) return;
+function check_tag() {
+    if (!myIt || !itDetermined) return;
     const now = Date.now();
-    if (now - lastTagTime < 500) return;
+    if (now - lastTagTime < TAG_COOLDOWN) return;
     if (Math.hypot(myX - theirX, myY - theirY) < BLOB_R * 2) {
-        myScore++;
         myIt = false;
-        theirIt = true;
+        myScore++;
         lastTagTime = now;
-        sendTag();
-        updateStatus();
+        status_el.textContent = 'You tagged them! Now run!';
+        send_tag();
     }
 }
 
-// Render one frame
-function draw() {
+function drawItRing(x, y, ts) {
+    const pulse = 0.5 + 0.5 * Math.sin(ts / 150);
+    ctx.beginPath();
+    ctx.arc(x, y, BLOB_R + 6 + 4 * pulse, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255, 180, 0, ' + (0.7 + 0.3 * pulse) + ')';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+}
+
+function draw(ts) {
     ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(0, 0, W, H);
 
-    // RTT bar chart underlay (behind everything)
-    ctx.fillStyle = 'rgba(30,120,220,0.25)';
-    for (let x = 0; x < W; x++) {
-        if (chartData[x] !== null) {
-            const barH = Math.min(H, Math.round(chartData[x] * H / 1000));
-            ctx.fillRect(x, H - barH, 1, barH);
-        }
-    }
+    // Score bar background
+    ctx.fillStyle = '#efefef';
+    ctx.fillRect(0, 0, W, SCORE_H);
 
-    // Horizontal grid lines at 100ms RTT intervals
-    ctx.strokeStyle = 'rgba(0,0,0,0.07)';
+    // Score divider
+    ctx.strokeStyle = '#ccc';
     ctx.lineWidth = 1;
-    for (let i = 1; i <= 10; i++) {
-        const y = H - i * H / 10;
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
-    }
+    ctx.beginPath(); ctx.moveTo(0, SCORE_H); ctx.lineTo(W, SCORE_H); ctx.stroke();
 
-    // Scores at top
+    // Play area background
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, SCORE_H, W, H - SCORE_H);
+
+    // Scores
     ctx.textAlign = 'center';
-    ctx.font = 'bold 36px monospace';
-    ctx.fillStyle = '#1155cc';
-    ctx.fillText(myScore, W / 4, 52);
-    ctx.fillStyle = '#cc1111';
-    ctx.fillText(theirScore, 3 * W / 4, 52);
+    ctx.font = 'bold 30px monospace';
+    ctx.fillStyle = '#1a5fb4';
+    ctx.fillText(myScore, 80, 42);
+    ctx.fillStyle = '#c01c28';
+    ctx.fillText(theirScore, W - 80, 42);
+
     ctx.font = '13px monospace';
-    ctx.fillStyle = '#888';
-    ctx.fillText('YOU', W / 4, 70);
-    ctx.fillText('THEM', 3 * W / 4, 70);
+    ctx.fillStyle = '#555';
+    ctx.fillText('You', 80, 56);
+    ctx.fillText('Them', W - 80, 56);
 
-    // Pulsing ring parameters (frame-rate independent)
-    const pulse = 0.5 + 0.5 * Math.sin(Date.now() * 0.009);
-    const ringR = BLOB_R + 6 + pulse * 5;
-    const ringAlpha = 0.65 + 0.35 * pulse;
-    const ringWidth = 3 + pulse * 2;
-
-    // Opponent blob
-    if (opponentConnected) {
-        if (theirIt) {
-            ctx.save();
-            ctx.strokeStyle = `rgba(210,30,30,${ringAlpha})`;
-            ctx.lineWidth = ringWidth;
-            ctx.shadowColor = 'rgba(255,0,0,0.55)';
-            ctx.shadowBlur = 16;
-            ctx.beginPath();
-            ctx.arc(theirX, theirY, ringR, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.restore();
-        }
-        ctx.fillStyle = '#cc1111';
-        ctx.beginPath();
-        ctx.arc(theirX, theirY, BLOB_R, 0, Math.PI * 2);
-        ctx.fill();
+    if (myIt !== null) {
+        ctx.fillStyle = '#888';
+        ctx.font = '15px monospace';
+        ctx.fillText(myIt ? 'IT: YOU' : 'IT: THEM', W / 2, 38);
     }
 
-    // My blob
-    if (myIt) {
-        ctx.save();
-        ctx.strokeStyle = `rgba(20,80,220,${ringAlpha})`;
-        ctx.lineWidth = ringWidth;
-        ctx.shadowColor = 'rgba(0,80,255,0.55)';
-        ctx.shadowBlur = 16;
-        ctx.beginPath();
-        ctx.arc(myX, myY, ringR, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.restore();
-    }
-    ctx.fillStyle = '#1155cc';
+    // Opponent blob (red)
+    ctx.beginPath();
+    ctx.arc(theirX, theirY, BLOB_R, 0, Math.PI * 2);
+    ctx.fillStyle = '#c01c28';
+    ctx.fill();
+    if (myIt === false && itDetermined) drawItRing(theirX, theirY, ts);
+
+    // My blob (blue)
     ctx.beginPath();
     ctx.arc(myX, myY, BLOB_R, 0, Math.PI * 2);
+    ctx.fillStyle = '#1a5fb4';
     ctx.fill();
-
-    // RTT stats text
-    const samples = chartData.filter(v => v !== null);
-    if (samples.length === 0) {
-        ping_stats.textContent = 'RTT -- min: --  max: --  avg: --';
-    } else {
-        const mn = Math.min(...samples), mx = Math.max(...samples);
-        const av = samples.reduce((a, b) => a + b, 0) / samples.length;
-        ping_stats.textContent = `RTT -- min: ${mn}ms  max: ${mx}ms  avg: ${av.toFixed(1)}ms`;
-    }
+    if (myIt === true && itDetermined) drawItRing(myX, myY, ts);
 }
 
-function loop() {
-    advanceChartCursor();
-    maybeSendPing();
-    sendPos();
-    checkTag();
-    draw();
+let lastFrame = null;
+function loop(ts) {
+    lastFrame = ts;
+    check_tag();
+    send_pos();
+    draw(ts);
     requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
 
-// Fullscreen
+document.addEventListener('fullscreenchange', resizeCanvas);
+document.addEventListener('webkitfullscreenchange', resizeCanvas);
 function resizeCanvas() {
     if (document.fullscreenElement === canvas_wrap || document.webkitFullscreenElement === canvas_wrap) {
         const scale = Math.min(window.screen.width / W, window.screen.height / H);
         canvas.style.width = (W * scale) + 'px';
         canvas.style.height = (H * scale) + 'px';
     } else {
-        canvas.style.width = '';
-        canvas.style.height = '';
+        canvas.style.width = ''; canvas.style.height = '';
     }
 }
-document.addEventListener('fullscreenchange', resizeCanvas);
-document.addEventListener('webkitfullscreenchange', resizeCanvas);
+
 fs_btn.onclick = () => {
     if (!document.fullscreenElement && !document.webkitFullscreenElement) {
-        (canvas_wrap.requestFullscreen || canvas_wrap.webkitRequestFullscreen).call(canvas_wrap).catch(() => {});
+        const req = canvas_wrap.requestFullscreen || canvas_wrap.webkitRequestFullscreen;
+        req.call(canvas_wrap).catch(() => {});
     } else {
         (document.exitFullscreen || document.webkitExitFullscreen).call(document);
     }
 };
 
-// WebSocket: connect and auto-reconnect
 function connect() {
     socket = new WebSocket(ws_url_input.value);
-    socket.onclose = () => {
-        status_msg.textContent = 'Disconnected. Reconnecting...';
-        setTimeout(connect, 200);
-    };
+    socket.onclose = () => setTimeout(connect, 200);
     socket.onopen = () => {
         let work = Promise.resolve();
-        socket.onmessage = async event => {
+        socket.onmessage = async (event) => {
             work = work.then(async () => {
                 let outer;
-                try { outer = JSON.parse(event.data); } catch (e) { return; }
+                try { outer = JSON.parse(event.data); } catch(e) { return; }
                 let messages, forwarded = false, src = null;
                 if ('Forwarded' in outer[0]) {
                     src = outer[0].Forwarded.from_ed25519;
                     forwarded = true;
-                    if (their_ed25519_el.value && src !== their_ed25519_el.value) return;
-                    try { messages = JSON.parse(outer[0].Forwarded.messages); } catch (e) { return; }
+                    if (their_ed25519 && src !== their_ed25519) return;
+                    try { messages = JSON.parse(outer[0].Forwarded.messages); } catch(e) { return; }
                 } else {
                     messages = outer;
                 }
                 for (const msg of messages) {
-                    if (!forwarded) {
-                        if ('YourEd25519' in msg) {
-                            my_ed25519 = msg.YourEd25519.ed25519;
-                            update_links();
-                            initItState();
-                        }
-                        if ('PleaseSignYourPub' in msg) {
-                            my_ed25519 = msg.PleaseSignYourPub.ed25519;
-                            update_links();
-                            initItState();
-                        }
+                    if (!forwarded && 'YourEd25519' in msg) {
+                        my_ed25519 = msg.YourEd25519.ed25519;
+                        update_link();
+                        determine_it();
                     }
-                    if (forwarded) {
-                        if ('BlobPos' in msg) {
-                            const m = msg.BlobPos;
-                            theirX = m.x; theirY = m.y; theirIt = m.it;
-                            if (!opponentConnected) { opponentConnected = true; updateStatus(); }
-                        }
-                        if ('BlobTag' in msg) {
-                            // They tagged me: I become "it", they scored
-                            myIt = true;
-                            theirIt = false;
-                            theirScore++;
-                            lastTagTime = Date.now();
-                            updateStatus();
-                        }
-                        if ('PongPing' in msg && socket.readyState === WebSocket.OPEN) {
-                            socket.send(JSON.stringify([{Forward:{
-                                to_ed25519: src,
-                                messages: [{PongPingPong:{seq: msg.PongPing.seq, t: msg.PongPing.t}}]
-                            }}]));
-                        }
-                        if ('PongPingPong' in msg) {
-                            chartData[chartCol(msg.PongPingPong.t)] = Date.now() - msg.PongPingPong.t;
-                            pendingPings.delete(msg.PongPingPong.seq);
-                        }
+                    if (!forwarded && 'PleaseSignYourPub' in msg) {
+                        my_ed25519 = msg.PleaseSignYourPub.ed25519;
+                        update_link();
+                        determine_it();
+                    }
+                    if (forwarded && 'BlobPos' in msg) {
+                        theirX = msg.BlobPos.x;
+                        theirY = msg.BlobPos.y;
+                        // it field is for rendering only; do NOT modify myIt from BlobPos
+                    }
+                    if (forwarded && 'BlobTag' in msg) {
+                        theirScore++;
+                        myIt = true;
+                        lastTagTime = Date.now();
+                        status_el.textContent = 'They tagged you! Go catch them!';
                     }
                 }
             });
         };
-        // Pre-fill opponent key from URL param (player B flow)
-        const params = new URLSearchParams(location.search);
+        const params = new URLSearchParams(window.location.search);
         params.forEach((v, k) => { if (k === 'ed25519') set_their_ed25519(v); });
     };
 }
 connect();
-
-their_ed25519_el.addEventListener('input', () => { update_links(); initItState(); });
 </script>
 </body>
 </html>
