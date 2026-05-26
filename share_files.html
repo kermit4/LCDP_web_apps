@@ -8,18 +8,18 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
   font-family: monospace;
-  background: #111;
-  color: #ccc;
+  background: #fff;
+  color: #222;
   padding: 1rem;
   min-height: 100vh;
 }
-h1 { color: #4af; margin-bottom: 1rem; font-size: 1.2rem; }
-a { color: #4af; }
+h1 { color: #1a6fa0; margin-bottom: 1rem; font-size: 1.2rem; }
+a { color: #1a6fa0; }
 #status-bar {
   display: flex;
   gap: 1.5rem;
-  background: #1a1a1a;
-  border: 1px solid #333;
+  background: #f5f5f5;
+  border: 1px solid #ddd;
   border-radius: 4px;
   padding: .6rem 1rem;
   margin-bottom: 1rem;
@@ -27,32 +27,32 @@ a { color: #4af; }
   flex-wrap: wrap;
 }
 .stat-item { display: flex; flex-direction: column; }
-.stat-label { color: #666; font-size: .75rem; }
-.stat-value { color: #eee; }
+.stat-label { color: #888; font-size: .75rem; }
+.stat-value { color: #111; }
 #drop-zone {
-  border: 2px dashed #444;
+  border: 2px dashed #bbb;
   border-radius: 6px;
   padding: 2rem;
   text-align: center;
   cursor: pointer;
   transition: border-color .2s, background .2s;
   margin-bottom: 1rem;
-  background: #151515;
+  background: #fafafa;
 }
-#drop-zone.over { border-color: #4af; background: #0d1f2d; }
-#drop-zone p { color: #555; margin-bottom: .6rem; }
+#drop-zone.over { border-color: #1a6fa0; background: #e8f4fc; }
+#drop-zone p { color: #666; margin-bottom: .6rem; }
 #drop-zone input[type=file] { display: none; }
 #drop-zone label {
   display: inline-block;
-  background: #1e3a50;
-  color: #4af;
-  border: 1px solid #4af;
+  background: #1a6fa0;
+  color: #fff;
+  border: 1px solid #1a6fa0;
   padding: .4rem 1rem;
   border-radius: 3px;
   cursor: pointer;
   font-size: .9rem;
 }
-#drop-zone label:hover { background: #264f6e; }
+#drop-zone label:hover { background: #145a80; }
 #queue {
   display: flex;
   flex-direction: column;
@@ -60,8 +60,8 @@ a { color: #4af; }
   margin-bottom: 1rem;
 }
 .file-row {
-  background: #1a1a1a;
-  border: 1px solid #2a2a2a;
+  background: #f9f9f9;
+  border: 1px solid #e0e0e0;
   border-radius: 4px;
   padding: .5rem .75rem;
   display: grid;
@@ -69,26 +69,26 @@ a { color: #4af; }
   gap: .3rem .8rem;
   align-items: center;
 }
-.file-name { color: #ddd; word-break: break-all; }
-.file-size { color: #666; font-size: .8rem; white-space: nowrap; }
-.file-status { color: #888; font-size: .8rem; grid-column: 1 / -1; }
+.file-name { color: #222; word-break: break-all; }
+.file-size { color: #888; font-size: .8rem; white-space: nowrap; }
+.file-status { color: #777; font-size: .8rem; grid-column: 1 / -1; }
 .progress-bar {
   grid-column: 1 / -1;
   height: 4px;
-  background: #2a2a2a;
+  background: #e0e0e0;
   border-radius: 2px;
   overflow: hidden;
 }
 .progress-fill {
   height: 100%;
-  background: #4af;
+  background: #1a6fa0;
   transition: width .15s;
   width: 0%;
 }
 .file-link { grid-column: 1 / -1; font-size: .8rem; }
-.file-link a { color: #7df; word-break: break-all; }
-.status-done .file-name { color: #9f9; }
-.status-error .file-name { color: #f77; }
+.file-link a { color: #1a6fa0; word-break: break-all; }
+.status-done .file-name { color: #2a8a2a; }
+.status-error .file-name { color: #cc2222; }
 #history {
   margin-top: 1rem;
 }
@@ -96,45 +96,45 @@ a { color: #4af; }
 .history-entry {
   font-size: .8rem;
   padding: .25rem 0;
-  border-bottom: 1px solid #1f1f1f;
+  border-bottom: 1px solid #e0e0e0;
   display: flex;
   gap: .5rem;
   flex-wrap: wrap;
   align-items: baseline;
 }
-.history-entry .h-name { color: #aaa; }
-.history-entry .h-hash { font-size: .75rem; color: #555; word-break: break-all; }
+.history-entry .h-name { color: #555; }
+.history-entry .h-hash { font-size: .75rem; color: #999; word-break: break-all; }
 #back { font-size: .85rem; margin-bottom: 1rem; display: inline-block; }
 </style>
 </head>
 <body>
 
-<a href="/" id="back">← back to status</a>
+<a href="/" id="back"><- back to status</a>
 <h1>Share Files</h1>
 
 <div id="status-bar">
   <div class="stat-item">
     <span class="stat-label">free disk</span>
-    <span class="stat-value" id="s-disk">…</span>
+    <span class="stat-value" id="s-disk">...</span>
   </div>
   <div class="stat-item">
     <span class="stat-label">active peers</span>
-    <span class="stat-value" id="s-peers">…</span>
+    <span class="stat-value" id="s-peers">...</span>
   </div>
   <div class="stat-item">
     <span class="stat-label">version</span>
-    <span class="stat-value" id="s-version">…</span>
+    <span class="stat-value" id="s-version">...</span>
   </div>
   <div class="stat-item">
     <span class="stat-label">public key</span>
-    <span class="stat-value" id="s-key" style="font-size:.7rem;color:#555">…</span>
+    <span class="stat-value" id="s-key" style="font-size:.7rem;color:#999">...</span>
   </div>
 </div>
 
 <div id="drop-zone">
   <p>drag files here, or</p>
   <label>pick files<input type="file" id="file-input" multiple></label>
-  <p style="margin-top:.6rem;font-size:.75rem;color:#444">
+  <p style="margin-top:.6rem;font-size:.75rem;color:#888">
     files are hashed with SHA-256 and stored in cjp2p/public/ &mdash; accessible by hash URL
   </p>
 </div>
@@ -164,7 +164,7 @@ async function refreshStatus() {
       `${j.active_peer_count} fast / ${j.total_peers} total`;
     document.getElementById('s-version').textContent = j.version || 'n/a';
     document.getElementById('s-key').textContent =
-      (j.public_key || '').slice(0, 16) + '…';
+      (j.public_key || '').slice(0, 16) + '...';
   } catch(e) {}
 }
 refreshStatus();
@@ -178,7 +178,7 @@ function uploadFile(file) {
     <span class="file-name">${file.name}</span>
     <span class="file-size">${fmtBytes(file.size)}</span>
     <div class="progress-bar"><div class="progress-fill" id="pf-${file.name.replace(/\W/g,'_')+Date.now()}"></div></div>
-    <span class="file-status" id="fs-${file.name.replace(/\W/g,'_')+Date.now()}">waiting…</span>
+    <span class="file-status" id="fs-${file.name.replace(/\W/g,'_')+Date.now()}">waiting...</span>
   `;
   // Use stable IDs via the row itself
   const fill = row.querySelector('.progress-fill');
@@ -203,7 +203,7 @@ function uploadFile(file) {
       let sha256 = '';
       try { sha256 = JSON.parse(xhr.responseText).sha256; } catch(e) {}
       fill.style.width = '100%';
-      fill.style.background = '#4f9';
+      fill.style.background = '#2a8a2a';
       status.textContent = 'done';
       row.classList.add('status-done');
       const linkDiv = document.createElement('div');
