@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Publish File</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: monospace;
+  background: #fff;
+  color: #222;
+  padding: 1rem;
+  min-height: 100vh;
+}
+h1 { color: #1a6fa0; margin-bottom: 1rem; font-size: 1.2rem; }
+a { color: #1a6fa0; }
+#status-bar {
+  display: flex;
+  gap: 1.5rem;
+  background: #f5f5f5;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: .6rem 1rem;
+  margin-bottom: 1rem;
+  font-size: .85rem;
+  flex-wrap: wrap;
+}
+.stat-item { display: flex; flex-direction: column; }
+.stat-label { color: #888; font-size: .75rem; }
+.stat-value { color: #111; }
+.explainer {
+  background: #f8f8f8;
+  border: 1px solid #ddd;
+  border-left: 3px solid #1a6fa0;
+  border-radius: 4px;
+  padding: .9rem 1.1rem;
+  margin-bottom: 1rem;
+  font-size: .82rem;
+  line-height: 1.6;
+  color: #444;
+}
+.explainer h2 { font-size: .9rem; color: #1a6fa0; margin-bottom: .4rem; }
+.explainer p { margin-bottom: .55rem; }
+.explainer p:last-child { margin-bottom: 0; }
+.explainer code {
+  background: #e8e8e8;
+  padding: .1em .35em;
+  border-radius: 2px;
+  font-size: .92em;
+  word-break: break-all;
+}
+.explainer ul { margin: .3rem 0 .45rem 1.4rem; }
+.explainer li { margin-bottom: .25rem; }
+.explainer .vs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: .5rem;
+  margin-top: .4rem;
+}
+.explainer .vs-box {
+  border: 1px solid #ddd;
+  border-radius: 3px;
+  padding: .45rem .6rem;
+  background: #fff;
+}
+.explainer .vs-box strong { display: block; margin-bottom: .2rem; color: #333; }
+#drop-zone {
+  border: 2px dashed #bbb;
+  border-radius: 6px;
+  padding: 1.5rem 2rem;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color .2s, background .2s;
+  margin-bottom: 1rem;
+  background: #fafafa;
+}
+#drop-zone.over { border-color: #1a6fa0; background: #e8f4fc; }
+#drop-zone p { color: #666; margin-bottom: .6rem; }
+#drop-zone input[type=file] { display: none; }
+#drop-zone label {
+  display: inline-block;
+  background: #1a6fa0;
+  color: #fff;
+  border: 1px solid #1a6fa0;
+  padding: .4rem 1rem;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: .9rem;
+}
+#drop-zone label:hover { background: #145a80; }
+#queue {
+  display: flex;
+  flex-direction: column;
+  gap: .6rem;
+  margin-bottom: 1rem;
+}
+.file-row {
+  background: #f9f9f9;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  padding: .55rem .75rem;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: .3rem .8rem;
+  align-items: center;
+}
+.file-source { color: #888; font-size: .78rem; word-break: break-all; grid-column: 1 / -1; }
+.publish-as-row {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  flex-wrap: wrap;
+}
+.publish-as-label { color: #555; font-size: .8rem; white-space: nowrap; }
+.publish-as-input {
+  flex: 1;
+  font-family: monospace;
+  font-size: .82rem;
+  padding: .25rem .4rem;
+  border: 1px solid #bbb;
+  border-radius: 3px;
+  min-width: 120px;
+  color: #222;
+}
+.publish-as-input:focus { outline: none; border-color: #1a6fa0; }
+.publish-btn {
+  background: #1a6fa0;
+  color: #fff;
+  border: none;
+  padding: .28rem .7rem;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: monospace;
+  font-size: .82rem;
+  white-space: nowrap;
+}
+.publish-btn:hover { background: #145a80; }
+.publish-btn:disabled { background: #aaa; cursor: default; }
+.file-size { color: #888; font-size: .78rem; white-space: nowrap; }
+.file-status { color: #777; font-size: .8rem; grid-column: 1 / -1; }
+.progress-bar {
+  grid-column: 1 / -1;
+  height: 4px;
+  background: #e0e0e0;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: #1a6fa0;
+  transition: width .15s;
+  width: 0%;
+}
+.file-link { grid-column: 1 / -1; font-size: .8rem; }
+.file-link a { color: #1a6fa0; word-break: break-all; }
+.status-done .file-source { color: #2a8a2a; }
+.status-error .file-source { color: #cc2222; }
+#history { margin-top: 1rem; }
+#history h2 { color: #888; font-size: .9rem; margin-bottom: .5rem; }
+.history-entry {
+  font-size: .8rem;
+  padding: .25rem 0;
+  border-bottom: 1px solid #e0e0e0;
+  display: flex;
+  gap: .5rem;
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+.history-entry .h-name { color: #555; }
+.history-entry .h-url { font-size: .75rem; color: #999; word-break: break-all; }
+#back { font-size: .85rem; margin-bottom: 1rem; display: inline-block; }
+</style>
+</head>
+<body>
+
+<a href="/" id="back">&lt;- back to status</a>
+<div id="page-origin" style="font-size:.75rem;color:#888;margin-bottom:.4rem;word-break:break-all"></div>
+<h1>Publish File</h1>
+
+<div id="status-bar">
+  <div class="stat-item">
+    <span class="stat-label">free disk</span>
+    <span class="stat-value" id="s-disk">...</span>
+  </div>
+  <div class="stat-item">
+    <span class="stat-label">active peers</span>
+    <span class="stat-value" id="s-peers">...</span>
+  </div>
+  <div class="stat-item">
+    <span class="stat-label">version</span>
+    <span class="stat-value" id="s-version">...</span>
+  </div>
+  <div class="stat-item">
+    <span class="stat-label">your public key</span>
+    <span class="stat-value" id="s-key" style="font-size:.7rem;color:#999">...</span>
+  </div>
+</div>
+
+<div class="explainer">
+  <h2>What "publish" does</h2>
+  <p>Publishing gives a file a <strong>persistent, updatable URL</strong> tied to your node's identity. The URL looks like:</p>
+  <p style="text-align:center"><code>http://&lt;host&gt;/latest/&lt;your-pubkey&gt;/&lt;publish-name&gt;</code></p>
+  <p>The <strong>publish name</strong> is the path the file is served under &mdash; it doesn't have to match the source filename. You might drop <code>myapp-v2.3.tar.gz</code> but publish it as <code>myapp/latest.tar.gz</code>, so that URL stays stable across releases. Subdirectory paths (e.g. <code>tools/index.html</code>) are allowed.</p>
+  <p>That URL <em>always resolves to your current version</em> of that name. Republish with the same name to update it. Your public key is part of the URL, so no one else can overwrite it.</p>
+
+  <h2 style="margin-top:.7rem">How it works internally</h2>
+  <ul>
+    <li>The file is written to <code>cjp2p/origin/&lt;publish-name&gt;</code> on your node.</li>
+    <li>When anyone requests the <code>/latest/</code> URL, your node hashes the current file and signs a <strong>Latest message</strong> binding <code>(your-pubkey, publish-name)</code> to that SHA-256, with a sequence number equal to the file's modification time.</li>
+    <li>That signed message propagates to peers. Any peer that has seen it can answer future requests &mdash; even if your node is temporarily offline &mdash; by pointing the requester at the right hash. The actual bytes are served from <code>cjp2p/public/&lt;sha256&gt;</code> and spread peer-to-peer from there.</li>
+    <li>When you republish, the new Latest message has a higher sequence number. Peers prefer the highest they have seen, so the URL automatically tracks the new content.</li>
+  </ul>
+
+  <h2 style="margin-top:.7rem">Publish vs. Upload</h2>
+  <div class="vs">
+    <div class="vs-box">
+      <strong>Publish (this page)</strong>
+      URL: <code>/latest/&lt;key&gt;/&lt;name&gt;</code><br>
+      Mutable &mdash; republish to update<br>
+      Tied to your identity<br>
+      You control the public name
+    </div>
+    <div class="vs-box">
+      <strong><a href="/share_files.html">Upload</a></strong>
+      URL: <code>/&lt;sha256&gt;</code><br>
+      Immutable &mdash; content is the address<br>
+      Anonymous<br>
+      Any peer holding the bytes can serve it
+    </div>
+  </div>
+</div>
+
+<div id="drop-zone">
+  <p>drop files here to stage them, or</p>
+  <label>pick files<input type="file" id="file-input" multiple></label>
+  <p style="margin-top:.5rem;font-size:.75rem;color:#888">
+    edit the publish name before sending &mdash; it becomes the path under <code>/latest/&lt;pubkey&gt;/</code>
+  </p>
+</div>
+
+<div id="queue"></div>
+<div id="history"><h2>published this session</h2></div>
+
+<script>
+const PORT = location.port || 24255;
+const BASE = `${location.protocol}//${location.hostname}:${PORT}`;
+document.getElementById('page-origin').textContent = 'page url: ' + location.href;
+let pubKey = '';
+
+function fmtBytes(b) {
+  if (b >= 1<<30) return (b/(1<<30)).toFixed(1)+' GB';
+  if (b >= 1<<20) return (b/(1<<20)).toFixed(1)+' MB';
+  if (b >= 1<<10) return (b/(1<<10)).toFixed(1)+' KB';
+  return b+' B';
+}
+
+async function refreshStatus() {
+  try {
+    const r = await fetch('/status.json');
+    const j = await r.json();
+    document.getElementById('s-disk').textContent =
+      j.free_disk_bytes != null ? fmtBytes(j.free_disk_bytes) : 'n/a';
+    document.getElementById('s-peers').textContent =
+      `${j.active_peer_count} fast / ${j.total_peers} total`;
+    document.getElementById('s-version').textContent = j.version || 'n/a';
+    pubKey = j.public_key || '';
+    document.getElementById('s-key').textContent = pubKey.slice(0, 18) + '...';
+  } catch(e) {}
+}
+refreshStatus();
+setInterval(refreshStatus, 8000);
+
+function stageFile(file) {
+  const queue = document.getElementById('queue');
+  const row = document.createElement('div');
+  row.className = 'file-row';
+  const safeSource = file.name.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+  row.innerHTML = `
+    <span class="file-source">${safeSource}</span>
+    <span class="file-size">${fmtBytes(file.size)}</span>
+    <div class="publish-as-row">
+      <span class="publish-as-label">publish as:</span>
+      <input class="publish-as-input" type="text" value="${file.name.replace(/"/g,'&quot;')}" spellcheck="false">
+      <button class="publish-btn">Publish</button>
+    </div>
+  `;
+  const input = row.querySelector('.publish-as-input');
+  const btn = row.querySelector('.publish-btn');
+
+  const doPublish = () => {
+    const publishName = input.value.trim();
+    if (!publishName) { input.focus(); return; }
+    input.disabled = true;
+    btn.disabled = true;
+    sendFile(file, publishName, row);
+  };
+
+  btn.addEventListener('click', doPublish);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') doPublish(); });
+
+  queue.prepend(row);
+  input.focus();
+  input.select();
+}
+
+function sendFile(file, publishName, row) {
+  const fill = document.createElement('div');
+  fill.className = 'progress-fill';
+  const bar = document.createElement('div');
+  bar.className = 'progress-bar';
+  bar.appendChild(fill);
+
+  const status = document.createElement('span');
+  status.className = 'file-status';
+  status.textContent = 'reading file...';
+
+  const publishAsRow = row.querySelector('.publish-as-row');
+  if (!publishAsRow) {
+    const err = document.createElement('span');
+    err.className = 'file-status';
+    err.textContent = 'bug: publish-as-row missing from DOM';
+    row.appendChild(err);
+    row.classList.add('status-error');
+    return;
+  }
+  publishAsRow.replaceWith(bar, status);
+
+  const encodedName = publishName.split('/').map(encodeURIComponent).join('/');
+  const fail = (msg) => { status.textContent = msg; row.classList.add('status-error'); };
+
+  // Read the whole file into memory first. On Android some File objects
+  // from the picker reference URIs the WebView can't stream, so doing this
+  // up-front gives a clear error instead of a silent xhr status:0.
+  const reader = new FileReader();
+  reader.onerror = () => {
+    const e = reader.error;
+    fail(`cannot read file — ${e ? e.name + ': ' + e.message : 'FileReader error'} (Android permission issue?)`);
+  };
+  reader.onload = () => {
+    const buf = reader.result; // ArrayBuffer
+    status.textContent = 'uploading...';
+    const targetUrl = new URL('/publish_origin', location.href).href;
+    const xhr = new XMLHttpRequest();
+    const start = Date.now();
+
+    xhr.upload.addEventListener('progress', e => {
+      if (!e.lengthComputable) return;
+      const pct = (e.loaded / e.total * 100).toFixed(1);
+      fill.style.width = pct + '%';
+      const elapsed = (Date.now() - start) / 1000;
+      const speed = e.loaded / elapsed;
+      const remaining = (e.total - e.loaded) / speed;
+      status.textContent = `${pct}%  ${fmtBytes(speed)}/s  ETA ${remaining < 60 ? remaining.toFixed(0)+'s' : (remaining/60).toFixed(1)+'m'}`;
+    });
+
+    xhr.addEventListener('load', () => {
+      if (xhr.status === 200) {
+        let filename = '';
+        try { filename = JSON.parse(xhr.responseText).filename; } catch(e) {}
+        fill.style.width = '100%';
+        fill.style.background = '#2a8a2a';
+        status.textContent = 'done';
+        row.classList.add('status-done');
+        if (filename && pubKey) {
+          const url = `${BASE}/latest/${pubKey}/${filename.split('/').map(encodeURIComponent).join('/')}`;
+          const linkDiv = document.createElement('div');
+          linkDiv.className = 'file-link';
+          linkDiv.innerHTML = `<a href="${url}" target="_blank">${url}</a>`;
+          row.appendChild(linkDiv);
+          addHistory(filename, url);
+        }
+        refreshStatus();
+      } else {
+        fail(`server error ${xhr.status}: ${xhr.responseText.slice(0, 200)}`);
+      }
+    });
+
+    xhr.addEventListener('error', () => {
+      fail(`xhr error — readyState:${xhr.readyState} status:${xhr.status} target:${targetUrl} buf:${buf.byteLength}B`);
+    });
+    xhr.addEventListener('abort', () => {
+      fail(`xhr aborted — readyState:${xhr.readyState}`);
+    });
+
+    let step = 'open';
+    try {
+      xhr.open('POST', targetUrl);
+      step = 'setHeader content-type';
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+      step = 'setHeader x-filename';
+      xhr.setRequestHeader('X-Filename', encodedName);
+      step = 'send';
+      xhr.send(buf);
+    } catch(e) {
+      fail(`exception at "${step}": ${e.name}: ${e.message}`);
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+document.getElementById('file-input').addEventListener('change', e => {
+  for (const f of e.target.files) stageFile(f);
+  e.target.value = '';
+});
+
+const dz = document.getElementById('drop-zone');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('over'));
+dz.addEventListener('drop', e => {
+  e.preventDefault();
+  dz.classList.remove('over');
+  for (const f of e.dataTransfer.files) stageFile(f);
+});
+
+function addHistory(filename, url) {
+  const hist = document.getElementById('history');
+  const entry = document.createElement('div');
+  entry.className = 'history-entry';
+  entry.innerHTML = `<span class="h-name">${filename}</span><a class="h-url" href="${url}" target="_blank">${url}</a>`;
+  hist.appendChild(entry);
+}
+</script>
+</body>
+</html>
