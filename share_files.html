@@ -105,6 +105,29 @@ a { color: #1a6fa0; }
 .history-entry .h-name { color: #555; }
 .history-entry .h-hash { font-size: .75rem; color: #999; word-break: break-all; }
 #back { font-size: .85rem; margin-bottom: 1rem; display: inline-block; }
+.explainer {
+  background: #f8f8f8;
+  border: 1px solid #ddd;
+  border-left: 3px solid #1a6fa0;
+  border-radius: 4px;
+  padding: .9rem 1.1rem;
+  margin-bottom: 1rem;
+  font-size: .82rem;
+  line-height: 1.6;
+  color: #444;
+}
+.explainer h2 { font-size: .9rem; color: #1a6fa0; margin-bottom: .4rem; }
+.explainer p { margin-bottom: .5rem; }
+.explainer p:last-child { margin-bottom: 0; }
+.explainer code {
+  background: #e8e8e8;
+  padding: .1em .35em;
+  border-radius: 2px;
+  font-size: .92em;
+  word-break: break-all;
+}
+.explainer ul { margin: .3rem 0 .4rem 1.4rem; }
+.explainer li { margin-bottom: .25rem; }
 </style>
 </head>
 <body>
@@ -131,11 +154,30 @@ a { color: #1a6fa0; }
   </div>
 </div>
 
+<div class="explainer">
+  <h2>How hash-based file sharing works</h2>
+  <p>When you upload a file, the node computes its <strong>SHA-256 hash</strong> and stores it at <code>cjp2p/public/&lt;sha256&gt;</code>. The URL you get looks like:</p>
+  <p style="text-align:center"><code>http://127.0.0.1:24255/&lt;sha256&gt;</code></p>
+  <p>Because the URL <em>is</em> the hash of the content, it has two useful properties:</p>
+  <ul>
+    <li><strong>Self-verifying:</strong> any node that serves you the file can be verified by hashing what you received and comparing it to the URL. If the bytes are wrong, the hash won't match &mdash; no trust required.</li>
+    <li><strong>Immutable:</strong> the same URL will always mean the same bytes, forever. Old links never break and never silently change.</li>
+  </ul>
+  <h2 style="margin-top:.6rem">P2P propagation</h2>
+  <p>When a node receives a request for a hash it doesn't have locally, it asks its peers. Any peer that has seen the file can respond. Once a node has the file, it serves it to future requesters &mdash; so the file <em>spreads through the network as demand exists</em>.</p>
+  <ul>
+    <li>You don't have to stay online. Once any peer has downloaded your file, that peer can serve it.</li>
+    <li>Files are automatically replicated by every node that downloads them.</li>
+    <li>There is no central server. Any node that has the bytes is a server.</li>
+  </ul>
+  <p>For <strong>updatable named URLs</strong> (same link, new content), see <a href="/publish.html">Publish</a>.</p>
+</div>
+
 <div id="drop-zone">
   <p>drag files here, or</p>
   <label>pick files<input type="file" id="file-input" multiple></label>
   <p style="margin-top:.6rem;font-size:.75rem;color:#888">
-    files are hashed with SHA-256 and stored in cjp2p/public/ &mdash; accessible by hash URL
+    files are hashed with SHA-256 and stored in <code>cjp2p/public/</code> &mdash; accessible by hash URL
   </p>
 </div>
 

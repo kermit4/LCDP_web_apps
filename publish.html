@@ -201,7 +201,7 @@ a { color: #1a6fa0; }
 <div class="explainer">
   <h2>What "publish" does</h2>
   <p>Publishing gives a file a <strong>persistent, updatable URL</strong> tied to your node's identity. The URL looks like:</p>
-  <p style="text-align:center"><code>http://&lt;host&gt;/latest/&lt;your-pubkey&gt;/&lt;publish-name&gt;</code></p>
+  <p style="text-align:center"><code>http://127.0.0.1:24255/latest/&lt;your-pubkey&gt;/&lt;publish-path&gt;</code></p>
   <p>The <strong>publish name</strong> is the path the file is served under &mdash; it doesn't have to match the source filename. You might drop <code>myapp-v2.3.tar.gz</code> but publish it as <code>myapp/latest.tar.gz</code>, so that URL stays stable across releases. Subdirectory paths (e.g. <code>tools/index.html</code>) are allowed.</p>
   <p>That URL <em>always resolves to your current version</em> of that name. Republish with the same name to update it. Your public key is part of the URL, so no one else can overwrite it.</p>
 
@@ -223,7 +223,7 @@ a { color: #1a6fa0; }
       You control the public name
     </div>
     <div class="vs-box">
-      <strong><a href="/share_files.html">Upload</a></strong>
+      <strong><a href="share_files.html">Upload</a></strong>
       URL: <code>/&lt;sha256&gt;</code><br>
       Immutable &mdash; content is the address<br>
       Anonymous<br>
@@ -336,7 +336,7 @@ function sendFile(file, publishName, row) {
   const reader = new FileReader();
   reader.onerror = () => {
     const e = reader.error;
-    fail(`cannot read file — ${e ? e.name + ': ' + e.message : 'FileReader error'} (Android permission issue?)`);
+    fail(`cannot read file -- ${e ? e.name + ': ' + e.message : 'FileReader error'} (Android permission issue?)`);
   };
   reader.onload = () => {
     const buf = reader.result; // ArrayBuffer
@@ -378,10 +378,10 @@ function sendFile(file, publishName, row) {
     });
 
     xhr.addEventListener('error', () => {
-      fail(`xhr error — readyState:${xhr.readyState} status:${xhr.status} target:${targetUrl} buf:${buf.byteLength}B`);
+      fail(`xhr error -- readyState:${xhr.readyState} status:${xhr.status} target:${targetUrl} buf:${buf.byteLength}B`);
     });
     xhr.addEventListener('abort', () => {
-      fail(`xhr aborted — readyState:${xhr.readyState}`);
+      fail(`xhr aborted -- readyState:${xhr.readyState}`);
     });
 
     let step = 'open';

@@ -54,6 +54,55 @@ ws url: <input id=ws_url size=50>
 <button id=debugBtn>debug log</button>
 <div id=logDiv></div>
 
+<div style="font-family:monospace;font-size:12px;line-height:1.6;color:#444;
+            background:#f8f8f8;border:1px solid #ddd;border-left:3px solid #1a6fa0;
+            border-radius:4px;padding:.9rem 1.1rem;margin-top:1rem;max-width:700px">
+  <strong style="color:#1a6fa0;display:block;margin-bottom:.4rem;font-size:13px">How broadcasting works</strong>
+
+  <p style="margin-bottom:.5rem">
+    This page records your camera/mic and pushes the video to your local cjp2p node in
+    real time. Here is the full path from your camera to a viewer:
+  </p>
+  <ol style="margin:.3rem 0 .5rem 1.4rem">
+    <li style="margin-bottom:.3rem">
+      <strong>Record &amp; chunk:</strong> your browser captures video and audio via <code>MediaRecorder</code>,
+      yielding binary chunks roughly every second. Each chunk is stored in IndexedDB in your browser.
+    </li>
+    <li style="margin-bottom:.3rem">
+      <strong>Push blocks:</strong> chunks are sliced into 4 KB blocks and sent to your local node
+      over a WebSocket as <code>Content</code> messages with a byte offset.
+      The node signs each block with your ed25519 private key before storing it.
+    </li>
+    <li style="margin-bottom:.3rem">
+      <strong>Cue file:</strong> a parallel <code>.cues.json</code> sidecar stream is also pushed,
+      recording which byte offsets correspond to keyframes and their timestamps.
+      This is what lets the <a href="watch.html">watch page</a> seek to arbitrary points in a live or finished recording.
+    </li>
+    <li style="margin-bottom:.3rem">
+      <strong>Viewers pull:</strong> viewers open the stream URL
+      (<code>/stream/&lt;pubkey&gt;/&lt;stream-id&gt;</code>) and request blocks they don't yet have.
+      Your node serves blocks directly from its signed store.
+    </li>
+    <li style="margin-bottom:.3rem">
+      <strong>Viewers re-serve:</strong> once a viewer has downloaded a block,
+      their node stores it locally and will answer <em>other</em> viewers' requests for the same block.
+      The broadcaster's node is no longer the sole source &mdash; every viewer is also a partial server.
+      As the viewer count grows, so does the total available bandwidth, because each new viewer
+      adds upload capacity for the blocks it has already received.
+    </li>
+    <li>
+      <strong>Authenticity:</strong> blocks carry ed25519 signatures, so viewers can verify
+      that every byte came from the original broadcaster. A malicious peer that tries to serve
+      modified bytes will be rejected.
+    </li>
+  </ol>
+
+  <strong style="color:#444">Offline resilience:</strong>
+  after a live broadcast ends, any peer that downloaded the stream can continue serving it.
+  The stream lives in the network as long as at least one peer holds the blocks &mdash; not
+  just while your node is running.
+</div>
+
 <script>
 const localVideo    = document.getElementById('localVideo');
 const localCanvas   = document.getElementById('localCanvas');
@@ -702,7 +751,7 @@ function showStreamUrl() {
     recUrl.href = url;
     recUrl.textContent = url;
     const watchUrl = document.getElementById('watchUrl');
-    const wurl = `${base}/watch.html?v=stream/${my_ed25519}/${recordingUUID}`;
+    const wurl = `watch.html?v=stream/${my_ed25519}/${recordingUUID}`;
     watchUrl.href = wurl;
     watchUrl.textContent = wurl;
     urlBox.hidden = false;
