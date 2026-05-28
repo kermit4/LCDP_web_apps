@@ -1,0 +1,933 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Collaborative Music Studio</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: monospace; background: #eeeeec; color: #111; font-size: 13px; }
+
+#topbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 6px 10px; background: #ddd; border-bottom: 2px solid #bbb;
+}
+#topbar h1 { font-size: 14px; font-weight: bold; }
+
+.section {
+  margin: 8px; background: #fff; border: 1px solid #ccc;
+  border-radius: 4px; padding: 8px;
+}
+.section-title {
+  font-size: 11px; font-weight: bold; color: #555; text-transform: uppercase;
+  letter-spacing: 0.8px; margin-bottom: 6px;
+}
+
+/* Step buttons */
+.step-row { display: flex; align-items: center; gap: 2px; margin: 2px 0; }
+.row-label {
+  width: 58px; font-size: 10px; text-align: right; padding-right: 5px;
+  flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #555;
+}
+.track-label {
+  width: 36px; font-size: 10px; text-align: right; padding-right: 4px;
+  flex-shrink: 0; color: #777;
+}
+.step-btn {
+  width: 26px; height: 26px; border: 1px solid #bbb; border-radius: 3px;
+  background: #e4e4e0; cursor: pointer; font-size: 9px; font-weight: bold;
+  flex-shrink: 0; transition: background 0.05s;
+  display: flex; align-items: center; justify-content: center;
+}
+.step-btn.on { background: #4a80c8; border-color: #2a60a8; color: #fff; }
+.step-btn.beat-gap { margin-left: 5px; }
+.step-btn.playhead { box-shadow: inset 0 0 0 2px #f0c000; }
+.step-btn.playhead.on { background: #6aa0e8; }
+.step-btn:disabled { cursor: default; opacity: 0.85; }
+
+/* Synth steps */
+.synth-btn {
+  width: 32px; height: 32px; border: 1px solid #bbb; border-radius: 3px;
+  background: #e4e4e0; cursor: pointer; font-size: 10px; font-weight: bold;
+  flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+}
+.synth-btn.on { background: #d08020; border-color: #a06010; color: #fff; }
+.synth-btn.beat-gap { margin-left: 5px; }
+.synth-btn.playhead { box-shadow: inset 0 0 0 2px #f0c000; }
+.synth-btn.playhead.on { background: #e8a040; }
+.synth-btn:disabled { cursor: default; opacity: 0.85; }
+
+/* Controls */
+button.ctrl {
+  padding: 3px 8px; background: #e4e4e0; border: 1px solid #aaa;
+  border-radius: 3px; cursor: pointer; font-family: monospace; font-size: 12px;
+}
+button.ctrl:hover { background: #d4d4d0; }
+button.ctrl.on { background: #4a80c8; color: #fff; border-color: #2a60a8; }
+button.ctrl.play { background: #2a8a40; color: #fff; border-color: #1a6a30; }
+button.ctrl.danger { background: #c03020; color: #fff; border-color: #901810; }
+
+input[type=number] {
+  width: 52px; padding: 2px 4px; font-family: monospace; font-size: 13px;
+  border: 1px solid #aaa; border-radius: 3px; background: #f8f8f6;
+}
+input[type=text], input[type=search] {
+  padding: 3px 5px; font-family: monospace; font-size: 12px;
+  border: 1px solid #aaa; border-radius: 3px; background: #f8f8f6;
+}
+
+.step-num-row { display: flex; gap: 2px; margin-bottom: 2px; padding-left: 96px; }
+.step-num { width: 26px; font-size: 9px; text-align: center; color: #888; flex-shrink: 0; }
+.step-num.beat-gap { margin-left: 5px; }
+
+.synth-num-row { display: flex; gap: 2px; margin-bottom: 2px; padding-left: 96px; }
+.synth-num { width: 32px; font-size: 9px; text-align: center; color: #888; flex-shrink: 0; }
+.synth-num.beat-gap { margin-left: 5px; }
+
+.sample-slot {
+  border: 1px solid #ddd; border-radius: 3px; padding: 6px 8px;
+  margin-bottom: 6px; background: #fafaf8;
+}
+.sample-hdr { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 5px; }
+.sample-hdr label { font-size: 11px; font-weight: bold; color: #444; }
+
+#status_bar { margin: 0 8px 6px; font-size: 11px; color: #777; }
+
+.peer-info { font-size: 10px; color: #888; margin-top: 3px; }
+</style>
+</head>
+<body>
+
+<div id=topbar>
+  <h1>Music Studio</h1>
+  <label style="font-size:12px;">BPM&nbsp;<input type=number id=bpm_input min=40 max=300 value=120></label>
+  <button class=ctrl id=play_btn onclick="togglePlay()">&#9654; Play</button>
+  <span style="font-size:11px;color:#666;margin-left:4px;">
+    <span id=peer_count>0</span> peers &nbsp;|&nbsp; me:&nbsp;<span id=my_key title="">…</span>
+  </span>
+  <button class=ctrl style="font-size:11px;" onclick="toggleAddPeer()">+ Peer Key</button>
+  <span id=add_peer_wrap style="display:none;">
+    <input type=text id=peer_key_input placeholder="ed25519 key (no 0x)" size=48>
+    <button class=ctrl onclick="addPeerKey()" style="font-size:11px;">Add</button>
+  </span>
+  <a href=/ style="font-size:11px;color:#888;margin-left:auto;">&#8617; status</a>
+</div>
+
+<div class=section>
+  <div class=section-title>Drum Machine</div>
+  <div id=drum_step_nums class=step-num-row></div>
+  <div id=drum_rows></div>
+</div>
+
+<div class=section>
+  <div class=section-title>Melodic Sequencer
+    &nbsp;<span style="font-size:11px;font-weight:normal;color:#666;">Click steps to cycle notes. All users play simultaneously.</span>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-size:11px;color:#666;">Wave:</span>
+    <button class=ctrl id=wave_square onclick="setWave('square')">Square</button>
+    <button class=ctrl id=wave_sawtooth onclick="setWave('sawtooth')">Saw</button>
+    <button class=ctrl id=wave_sine onclick="setWave('sine')">Sine</button>
+    <button class=ctrl id=wave_triangle onclick="setWave('triangle')">Triangle</button>
+    &nbsp;
+    <span style="font-size:11px;color:#666;">Octave:</span>
+    <button class=ctrl onclick="shiftOctave(-1)">&#8722;</button>
+    <span id=octave_disp style="min-width:16px;text-align:center;">4</span>
+    <button class=ctrl onclick="shiftOctave(1)">+</button>
+    &nbsp;
+    <label style="font-size:11px;color:#666;">Vol:
+      <input type=range id=synth_vol min=0 max=100 value=60 style="width:70px;vertical-align:middle;">
+    </label>
+  </div>
+  <div id=synth_step_nums class=synth-num-row></div>
+  <div id=synth_rows></div>
+</div>
+
+<div class=section>
+  <div class=section-title>Sampler / Beat Box
+    &nbsp;<span style="font-size:11px;font-weight:normal;color:#666;">Record short clips, sequence them in 8 steps.</span>
+  </div>
+  <div id=sampler_ui></div>
+</div>
+
+<div id=status_bar>Connecting…</div>
+
+<div style="margin:16px 8px 8px;padding:10px 12px;background:#fff;border:1px solid #ccc;border-radius:4px;font-size:12px;color:#555;line-height:1.6;">
+  <b>Note:</b> This entire page was generated by Claude Code from a single prompt:<br>
+  <blockquote style="margin:6px 0 0 0;padding:8px 10px;background:#f5f5f3;border-left:3px solid #bbb;font-style:italic;color:#444;">
+    "based on the examples in <a href=index.html>index.html</a> make a page in cjp2p/origin/ with standard basic electronic music synthesis gear that multiple people can operate, like drum machine and a couple other things. the page will need to take multiple ed25519 keys. it doesnt need to stay in sync since all inputs are not real time but inputs to these musical generation equipment. each user update should send all state generated by that user to all the other users keys, since this is loss tolerant."
+  </blockquote>
+</div>
+
+<script>
+// ── Constants ──────────────────────────────────────────────────────────────────
+const DRUM_STEPS   = 16;
+const SYNTH_STEPS  = 16;
+const SAMPLE_STEPS = 8;
+const DRUM_TRACKS  = ['kick','snare','hihat_c','hihat_o','clap'];
+const DRUM_LABEL   = {kick:'Kick', snare:'Snare', hihat_c:'HH cl', hihat_o:'HH op', clap:'Clap'};
+const NOTE_CYCLE   = [null,'C','D','E','F','G','A','B'];
+const NOTE_HZ      = {C:261.63, D:293.66, E:329.63, F:349.23, G:392.00, A:440.00, B:493.88};
+
+// pastel colors for up to 8 users
+const USER_BG = ['#deeeff','#ffe0dd','#dcf5dc','#fffbcc','#eeddff','#ccfaf0','#ffddf0','#ffe8cc'];
+
+// ── Global State ───────────────────────────────────────────────────────────────
+let my_key  = null;
+let socket;
+let known_peers  = new Set();
+let manual_peers = new Set();
+function all_peers() { return new Set([...known_peers, ...manual_peers]); }
+
+// Global BPM agreed across all users (last-write-wins by timestamp)
+let global_bpm    = 120;
+let global_bpm_ts = 0;
+
+function adopt_bpm(bpm, ts) {
+  if (ts >= global_bpm_ts) {
+    global_bpm    = Math.max(40, Math.min(300, bpm));
+    global_bpm_ts = ts;
+    document.getElementById('bpm_input').value = global_bpm;
+  }
+}
+
+function make_state() {
+  return {
+    bpm:   120,
+    drums: {
+      kick:    new Array(DRUM_STEPS).fill(false),
+      snare:   new Array(DRUM_STEPS).fill(false),
+      hihat_c: new Array(DRUM_STEPS).fill(false),
+      hihat_o: new Array(DRUM_STEPS).fill(false),
+      clap:    new Array(DRUM_STEPS).fill(false),
+    },
+    synth: {
+      steps:    new Array(SYNTH_STEPS).fill(null),
+      waveform: 'square',
+      octave:   4,
+      gain:     0.6,
+    },
+    samples: [
+      {name:'Beat Box 1', data:null, steps:new Array(SAMPLE_STEPS).fill(false)},
+      {name:'Beat Box 2', data:null, steps:new Array(SAMPLE_STEPS).fill(false)},
+    ],
+    timestamp: 0,
+  };
+}
+
+let my_state     = make_state();
+let peer_states  = {};   // key -> state
+let user_color   = {};   // key -> index
+
+function color_for(key) {
+  if (!(key in user_color)) user_color[key] = Object.keys(user_color).length % USER_BG.length;
+  return USER_BG[user_color[key]];
+}
+
+// ── Audio Engine ───────────────────────────────────────────────────────────────
+let ac = null;
+function get_ac() {
+  if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
+  return ac;
+}
+
+function noise_buf(dur) {
+  const a = get_ac();
+  const len = Math.ceil(a.sampleRate * dur);
+  const buf = a.createBuffer(1, len, a.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+  const src = a.createBufferSource();
+  src.buffer = buf;
+  return src;
+}
+
+function play_kick(t) {
+  const a = get_ac(), o = a.createOscillator(), g = a.createGain();
+  o.connect(g); g.connect(a.destination);
+  o.type = 'sine';
+  o.frequency.setValueAtTime(140, t);
+  o.frequency.exponentialRampToValueAtTime(0.01, t + 0.45);
+  g.gain.setValueAtTime(1.0, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
+  o.start(t); o.stop(t + 0.45);
+}
+
+function play_snare(t) {
+  const a = get_ac();
+  const ns = noise_buf(0.18), bp = a.createBiquadFilter(), ng = a.createGain();
+  bp.type = 'bandpass'; bp.frequency.value = 1400; bp.Q.value = 0.6;
+  ns.connect(bp); bp.connect(ng); ng.connect(a.destination);
+  ng.gain.setValueAtTime(0.7, t); ng.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+  ns.start(t); ns.stop(t + 0.18);
+  const o = a.createOscillator(), og = a.createGain();
+  o.connect(og); og.connect(a.destination);
+  o.type = 'triangle'; o.frequency.value = 185;
+  og.gain.setValueAtTime(0.35, t); og.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
+  o.start(t); o.stop(t + 0.09);
+}
+
+function play_hihat(t, open) {
+  const a = get_ac(), dur = open ? 0.28 : 0.045;
+  const ns = noise_buf(dur), hp = a.createBiquadFilter(), g = a.createGain();
+  hp.type = 'highpass'; hp.frequency.value = 7500;
+  ns.connect(hp); hp.connect(g); g.connect(a.destination);
+  g.gain.setValueAtTime(0.38, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  ns.start(t); ns.stop(t + dur);
+}
+
+function play_clap(t) {
+  const a = get_ac();
+  for (let i = 0; i < 3; i++) {
+    const ns = noise_buf(0.06), bp = a.createBiquadFilter(), g = a.createGain();
+    bp.type = 'bandpass'; bp.frequency.value = 1100; bp.Q.value = 0.8;
+    ns.connect(bp); bp.connect(g); g.connect(a.destination);
+    const ti = t + i * 0.014;
+    g.gain.setValueAtTime(0.45, ti); g.gain.exponentialRampToValueAtTime(0.001, ti + 0.06);
+    ns.start(ti); ns.stop(ti + 0.06);
+  }
+}
+
+function play_drum(track, t) {
+  switch (track) {
+    case 'kick':    play_kick(t);       break;
+    case 'snare':   play_snare(t);      break;
+    case 'hihat_c': play_hihat(t,false);break;
+    case 'hihat_o': play_hihat(t,true); break;
+    case 'clap':    play_clap(t);       break;
+  }
+}
+
+function play_note(note, octave, wave, gain_v, t, dur) {
+  if (!note) return;
+  const a = get_ac();
+  const freq = NOTE_HZ[note] * Math.pow(2, octave - 4);
+  const o = a.createOscillator(), g = a.createGain();
+  o.connect(g); g.connect(a.destination);
+  o.type = wave; o.frequency.value = freq;
+  g.gain.setValueAtTime(gain_v * 0.25, t);
+  g.gain.setValueAtTime(gain_v * 0.25, t + dur * 0.75);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.start(t); o.stop(t + dur);
+}
+
+// sample_buf[key][slot] = AudioBuffer|null
+const sample_buf = {};
+
+async function decode_sample(key, slot, b64) {
+  if (!b64) { if (sample_buf[key]) sample_buf[key][slot] = null; return; }
+  try {
+    const a = get_ac();
+    const bin = atob(b64);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    const buf = await a.decodeAudioData(arr.buffer.slice(0));
+    if (!sample_buf[key]) sample_buf[key] = [null, null];
+    sample_buf[key][slot] = buf;
+  } catch(e) { console.warn('sample decode', key, slot, e); }
+}
+
+function play_sample(key, slot, t) {
+  const bufs = sample_buf[key];
+  if (!bufs || !bufs[slot]) return;
+  try {
+    const a = get_ac(), src = a.createBufferSource();
+    src.buffer = bufs[slot];
+    src.connect(a.destination);
+    src.start(t);
+  } catch(e) {}
+}
+
+// ── Sequencer ──────────────────────────────────────────────────────────────────
+let playing       = false;
+let seq_step      = 0;
+let next_t        = 0;
+let sched_timer   = null;
+const LOOKAHEAD   = 0.1;   // seconds ahead to schedule
+const TICK_MS     = 25;
+
+function step_dur() { return 60.0 / global_bpm / 4; }
+
+function fire_step(step, t) {
+  const dur = step_dur();
+
+  // all users' drums
+  function do_drums(st) {
+    for (const tr of DRUM_TRACKS)
+      if (st.drums[tr][step]) play_drum(tr, t);
+  }
+  do_drums(my_state);
+  for (const ps of Object.values(peer_states)) do_drums(ps);
+
+  // all users' synths
+  function do_synth(st) {
+    const s = st.synth;
+    if (s.steps[step]) play_note(s.steps[step], s.octave, s.waveform, s.gain, t, dur * 0.88);
+  }
+  do_synth(my_state);
+  for (const ps of Object.values(peer_states)) do_synth(ps);
+
+  // samples: 8-step pattern, map into 16-step grid
+  if (step < SAMPLE_STEPS) {
+    function do_samples(st, key) {
+      for (let sl = 0; sl < st.samples.length; sl++)
+        if (st.samples[sl].steps[step]) play_sample(key, sl, t);
+    }
+    do_samples(my_state, my_key || '_me');
+    for (const [k, ps] of Object.entries(peer_states)) do_samples(ps, k);
+  }
+}
+
+function scheduler_tick() {
+  if (!playing) return;
+  const a = get_ac();
+  while (next_t < a.currentTime + LOOKAHEAD) {
+    fire_step(seq_step, next_t);
+    ui_step = seq_step;
+    next_t += step_dur();
+    seq_step = (seq_step + 1) % DRUM_STEPS;
+  }
+}
+
+let ui_step = -1, ui_last = -2;
+
+function anim() {
+  if (!playing) return;
+  if (ui_step !== ui_last) {
+    ui_last = ui_step;
+    document.querySelectorAll('[data-seq-step]').forEach(el => {
+      const s = +el.dataset.seqStep;
+      const max = +el.dataset.seqMax;
+      const cur = max === SAMPLE_STEPS ? ui_step % SAMPLE_STEPS : ui_step;
+      el.classList.toggle('playhead', s === cur);
+    });
+  }
+  requestAnimationFrame(anim);
+}
+
+function start_play() {
+  get_ac().resume();
+  playing = true; seq_step = 0;
+  next_t = get_ac().currentTime + 0.05;
+  sched_timer = setInterval(scheduler_tick, TICK_MS);
+  document.getElementById('play_btn').textContent = '■ Stop';
+  document.getElementById('play_btn').className = 'ctrl play';
+  requestAnimationFrame(anim);
+}
+
+function stop_play() {
+  playing = false;
+  clearInterval(sched_timer); sched_timer = null;
+  ui_step = -1; ui_last = -2;
+  document.querySelectorAll('[data-seq-step]').forEach(el => el.classList.remove('playhead'));
+  document.getElementById('play_btn').textContent = '&#9654; Play';
+  document.getElementById('play_btn').className = 'ctrl';
+}
+
+function togglePlay() { if (playing) stop_play(); else start_play(); }
+
+// ── UI Rendering ───────────────────────────────────────────────────────────────
+function fmt_key(k) { return k ? k.slice(0, 8) + '…' : '…'; }
+
+function make_step_btn(step, on, editable, cls, max_steps) {
+  const btn = document.createElement('button');
+  btn.className = cls + (on ? ' on' : '') + (step > 0 && step % 4 === 0 ? ' beat-gap' : '');
+  btn.dataset.seqStep = step;
+  btn.dataset.seqMax  = max_steps;
+  if (!editable) btn.disabled = true;
+  return btn;
+}
+
+// Drum rows
+function build_drum_section() {
+  // step numbers header
+  const hdr = document.getElementById('drum_step_nums');
+  hdr.innerHTML = '';
+  for (let s = 0; s < DRUM_STEPS; s++) {
+    const d = document.createElement('div');
+    d.className = 'step-num' + (s > 0 && s % 4 === 0 ? ' beat-gap' : '');
+    d.textContent = s + 1;
+    hdr.appendChild(d);
+  }
+
+  const container = document.getElementById('drum_rows');
+  container.innerHTML = '';
+
+  function add_user_drums(key, state, is_me) {
+    const bg = is_me ? '#eefff0' : color_for(key);
+    for (const tr of DRUM_TRACKS) {
+      const row = document.createElement('div');
+      row.className = 'step-row';
+      row.style.background = bg;
+      row.style.borderRadius = '2px';
+      row.style.marginBottom = '1px';
+      row.style.padding = '1px 2px';
+
+      const ul = document.createElement('div');
+      ul.className = 'row-label'; ul.title = key || '';
+      ul.textContent = is_me ? 'you' : fmt_key(key);
+      row.appendChild(ul);
+
+      const tl = document.createElement('div');
+      tl.className = 'track-label';
+      tl.textContent = DRUM_LABEL[tr];
+      row.appendChild(tl);
+
+      for (let s = 0; s < DRUM_STEPS; s++) {
+        const btn = make_step_btn(s, state.drums[tr][s], is_me, 'step-btn', DRUM_STEPS);
+        if (is_me) {
+          const t = tr, i = s;
+          btn.onmousedown = () => {
+            my_state.drums[t][i] = !my_state.drums[t][i];
+            btn.classList.toggle('on', my_state.drums[t][i]);
+            state_changed();
+          };
+        }
+        row.appendChild(btn);
+      }
+      container.appendChild(row);
+    }
+  }
+
+  if (my_key) add_user_drums(my_key, my_state, true);
+  for (const [k, ps] of Object.entries(peer_states)) add_user_drums(k, ps, false);
+}
+
+// Synth rows
+function build_synth_section() {
+  const hdr = document.getElementById('synth_step_nums');
+  hdr.innerHTML = '';
+  for (let s = 0; s < SYNTH_STEPS; s++) {
+    const d = document.createElement('div');
+    d.className = 'synth-num' + (s > 0 && s % 4 === 0 ? ' beat-gap' : '');
+    d.textContent = s + 1;
+    hdr.appendChild(d);
+  }
+
+  const container = document.getElementById('synth_rows');
+  container.innerHTML = '';
+
+  function add_user_synth(key, state, is_me) {
+    const bg = is_me ? '#fffbee' : color_for(key);
+    const row = document.createElement('div');
+    row.className = 'step-row';
+    row.style.background = bg;
+    row.style.borderRadius = '2px';
+    row.style.marginBottom = '1px';
+    row.style.padding = '1px 2px';
+
+    const ul = document.createElement('div');
+    ul.className = 'row-label'; ul.title = key || '';
+    ul.textContent = is_me ? 'you' : fmt_key(key);
+    row.appendChild(ul);
+
+    const wl = document.createElement('div');
+    wl.className = 'track-label';
+    wl.textContent = state.synth.waveform.slice(0, 3);
+    row.appendChild(wl);
+
+    for (let s = 0; s < SYNTH_STEPS; s++) {
+      const note = state.synth.steps[s];
+      const btn = make_step_btn(s, !!note, is_me, 'synth-btn', SYNTH_STEPS);
+      btn.textContent = note || '·';
+      if (is_me) {
+        const i = s;
+        btn.onclick = () => {
+          const cur = NOTE_CYCLE.indexOf(my_state.synth.steps[i]);
+          const nxt = NOTE_CYCLE[(cur + 1) % NOTE_CYCLE.length];
+          my_state.synth.steps[i] = nxt;
+          btn.textContent = nxt || '·';
+          btn.classList.toggle('on', !!nxt);
+          state_changed();
+        };
+      }
+      row.appendChild(btn);
+    }
+    container.appendChild(row);
+  }
+
+  if (my_key) add_user_synth(my_key, my_state, true);
+  for (const [k, ps] of Object.entries(peer_states)) add_user_synth(k, ps, false);
+
+  // Wave buttons
+  for (const w of ['square','sawtooth','sine','triangle']) {
+    const b = document.getElementById('wave_' + w);
+    if (b) b.className = 'ctrl' + (my_state.synth.waveform === w ? ' on' : '');
+  }
+  document.getElementById('octave_disp').textContent = my_state.synth.octave;
+}
+
+// Sampler
+function build_sampler() {
+  const container = document.getElementById('sampler_ui');
+  container.innerHTML = '';
+  if (!my_key) return;
+
+  for (let sl = 0; sl < 2; sl++) {
+    const samp = my_state.samples[sl];
+    const wrap = document.createElement('div');
+    wrap.className = 'sample-slot';
+
+    // header
+    const hdr = document.createElement('div');
+    hdr.className = 'sample-hdr';
+
+    const lbl = document.createElement('label');
+    lbl.textContent = 'Slot ' + (sl + 1) + ':';
+    hdr.appendChild(lbl);
+
+    const ni = document.createElement('input');
+    ni.type = 'text'; ni.value = samp.name; ni.style.width = '110px';
+    ni.onchange = () => { my_state.samples[sl].name = ni.value; state_changed(); };
+    hdr.appendChild(ni);
+
+    const rec_btn = document.createElement('button');
+    rec_btn.className = 'ctrl';
+    rec_btn.innerHTML = '&#9679; Rec';
+    rec_btn.style.color = '#a00';
+    rec_btn.onclick = () => start_recording(sl, rec_btn);
+    hdr.appendChild(rec_btn);
+
+    if (samp.data) {
+      const play_btn = document.createElement('button');
+      play_btn.className = 'ctrl';
+      play_btn.textContent = '▶';
+      play_btn.onclick = () => { get_ac().resume(); play_sample(my_key, sl, get_ac().currentTime); };
+      hdr.appendChild(play_btn);
+
+      const clr_btn = document.createElement('button');
+      clr_btn.className = 'ctrl';
+      clr_btn.textContent = '✕';
+      clr_btn.onclick = () => {
+        my_state.samples[sl].data = null;
+        if (sample_buf[my_key]) sample_buf[my_key][sl] = null;
+        build_sampler(); state_changed();
+      };
+      hdr.appendChild(clr_btn);
+
+      const sz = document.createElement('span');
+      sz.style.cssText = 'font-size:10px;color:#888;';
+      sz.textContent = Math.round(samp.data.length * 3 / 4 / 1024) + 'KB';
+      hdr.appendChild(sz);
+    } else {
+      const ns = document.createElement('span');
+      ns.style.cssText = 'font-size:10px;color:#aaa;';
+      ns.textContent = '(no recording)';
+      hdr.appendChild(ns);
+    }
+    wrap.appendChild(hdr);
+
+    // step pattern (8 steps)
+    const step_row = document.createElement('div');
+    step_row.className = 'step-row';
+    step_row.style.padding = '2px';
+
+    const slbl = document.createElement('div');
+    slbl.style.cssText = 'width:94px;font-size:10px;color:#888;text-align:right;padding-right:4px;flex-shrink:0;';
+    slbl.textContent = '8-step pattern';
+    step_row.appendChild(slbl);
+
+    for (let s = 0; s < SAMPLE_STEPS; s++) {
+      const btn = document.createElement('button');
+      btn.className = 'step-btn' + (samp.steps[s] ? ' on' : '') + (s > 0 && s % 4 === 0 ? ' beat-gap' : '');
+      btn.dataset.seqStep = s;
+      btn.dataset.seqMax  = SAMPLE_STEPS;
+      const sli = sl, si = s;
+      btn.onclick = () => {
+        my_state.samples[sli].steps[si] = !my_state.samples[sli].steps[si];
+        btn.classList.toggle('on', my_state.samples[sli].steps[si]);
+        state_changed();
+      };
+      step_row.appendChild(btn);
+    }
+    wrap.appendChild(step_row);
+
+    // Peer sample info
+    const peer_lines = [];
+    for (const [k, ps] of Object.entries(peer_states)) {
+      if (ps.samples[sl] && ps.samples[sl].data) {
+        peer_lines.push(fmt_key(k) + ' — ' + (ps.samples[sl].name || '?'));
+      }
+    }
+    if (peer_lines.length) {
+      const pi = document.createElement('div');
+      pi.className = 'peer-info';
+      pi.textContent = 'Peers have: ' + peer_lines.join(', ');
+      wrap.appendChild(pi);
+    }
+
+    container.appendChild(wrap);
+  }
+}
+
+function render_all() {
+  build_drum_section();
+  build_synth_section();
+  build_sampler();
+}
+
+// ── Recording ──────────────────────────────────────────────────────────────────
+let active_rec = null;
+let rec_chunks = [];
+
+function start_recording(slot, btn) {
+  if (active_rec) { active_rec.stop(); return; }
+  navigator.mediaDevices.getUserMedia({audio:true, video:false}).then(stream => {
+    rec_chunks = [];
+    const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '';
+    const opts = mime ? {mimeType: mime} : {};
+    const rec = new MediaRecorder(stream, opts);
+    active_rec = rec;
+    btn.innerHTML = '■ Stop';
+    btn.className = 'ctrl danger';
+    const to = setTimeout(() => { if (rec.state === 'recording') rec.stop(); }, 8000);
+    rec.ondataavailable = e => { if (e.data.size > 0) rec_chunks.push(e.data); };
+    rec.onstop = () => {
+      clearTimeout(to);
+      active_rec = null;
+      btn.innerHTML = '&#9679; Rec';
+      btn.className = 'ctrl';
+      btn.style.color = '#a00';
+      stream.getTracks().forEach(t => t.stop());
+      const blob = new Blob(rec_chunks, {type: mime || 'audio/webm'});
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const b64 = reader.result.includes(',') ? reader.result.split(',')[1] : reader.result;
+        my_state.samples[slot].data = b64;
+        if (!sample_buf[my_key]) sample_buf[my_key] = [null, null];
+        await decode_sample(my_key, slot, b64);
+        build_sampler();
+        state_changed_full();
+      };
+      reader.readAsDataURL(blob);
+    };
+    rec.start(100);
+  }).catch(e => alert('Mic access error: ' + e.message));
+}
+
+// ── Network ────────────────────────────────────────────────────────────────────
+let backoff_delay  = 500;
+let backoff_timer  = null;
+let backoff_full   = false;  // include sample audio in next retransmit?
+
+function strip_0x(s) { return s && s.startsWith('0x') ? s.slice(2) : s; }
+
+function build_msg(include_samples) {
+  return {
+    MusicState: {
+      bpm:   my_state.bpm,
+      drums: my_state.drums,
+      synth: my_state.synth,
+      samples: my_state.samples.map(s => ({
+        name:  s.name,
+        data:  include_samples ? s.data : null,
+        steps: s.steps,
+      })),
+      timestamp: my_state.timestamp,
+    }
+  };
+}
+
+function send_to(peer, include_samples) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  socket.send(JSON.stringify([{Forward:{
+    to_ed25519: peer,
+    messages:   [build_msg(include_samples)]
+  }}]));
+}
+
+function broadcast(include_samples) {
+  for (const p of all_peers()) send_to(p, include_samples);
+}
+
+function state_changed() {
+  my_state.timestamp = Date.now();
+  adopt_bpm(my_state.bpm, my_state.timestamp);
+  broadcast(false);
+  reset_backoff(false);
+}
+
+function state_changed_full() {
+  my_state.timestamp = Date.now();
+  broadcast(true);
+  reset_backoff(true);
+}
+
+function reset_backoff(full) {
+  clearTimeout(backoff_timer);
+  backoff_delay = 500;
+  if (full) backoff_full = true;
+  do_backoff();
+}
+
+function do_backoff() {
+  backoff_timer = setTimeout(() => {
+    broadcast(backoff_full);
+    backoff_full  = false;
+    backoff_delay = Math.min(backoff_delay * 1.5, 30000);
+    do_backoff();
+  }, backoff_delay);
+}
+
+function handle_music_state(from_key, msg) {
+  const ms = msg.MusicState;
+  if (!ms || typeof ms.timestamp !== 'number') return;
+  const old = peer_states[from_key];
+  if (old && old.timestamp >= ms.timestamp) return;
+
+  const ps = {
+    bpm:   ms.bpm || 120,
+    drums: {
+      kick:    arr_or(ms.drums?.kick,    DRUM_STEPS),
+      snare:   arr_or(ms.drums?.snare,   DRUM_STEPS),
+      hihat_c: arr_or(ms.drums?.hihat_c, DRUM_STEPS),
+      hihat_o: arr_or(ms.drums?.hihat_o, DRUM_STEPS),
+      clap:    arr_or(ms.drums?.clap,    DRUM_STEPS),
+    },
+    synth: {
+      steps:    arr_or(ms.synth?.steps, SYNTH_STEPS, null),
+      waveform: ms.synth?.waveform || 'square',
+      octave:   ms.synth?.octave   ?? 4,
+      gain:     ms.synth?.gain     ?? 0.6,
+    },
+    samples: (ms.samples || []).slice(0, 2).map((s, i) => ({
+      name:  s.name  || ('Sample ' + (i + 1)),
+      data:  s.data  || null,
+      steps: arr_or(s.steps, SAMPLE_STEPS),
+    })),
+    timestamp: ms.timestamp,
+  };
+  while (ps.samples.length < 2)
+    ps.samples.push({name:'Sample '+(ps.samples.length+1), data:null, steps:new Array(SAMPLE_STEPS).fill(false)});
+
+  peer_states[from_key] = ps;
+
+  // Decode any new sample audio
+  if (!sample_buf[from_key]) sample_buf[from_key] = [null, null];
+  for (let sl = 0; sl < 2; sl++) {
+    const nd = ps.samples[sl].data, od = old?.samples?.[sl]?.data;
+    if (nd && nd !== od) decode_sample(from_key, sl, nd);
+    if (!nd)             sample_buf[from_key][sl] = null;
+  }
+
+  // Adopt BPM if peer is more recent
+  adopt_bpm(ms.bpm, ms.timestamp);
+
+  render_all();
+}
+
+function arr_or(a, len, fill=false) {
+  if (Array.isArray(a) && a.length === len) return a;
+  const r = new Array(len).fill(fill);
+  if (Array.isArray(a)) for (let i = 0; i < Math.min(a.length, len); i++) r[i] = a[i];
+  return r;
+}
+
+function connect() {
+  const url = window.__TAURI__
+    ? 'ws://localhost:24255/wt'
+    : (() => { const u = new URL('/wt', location.href); u.protocol = u.protocol.replace('http','ws'); return u.toString(); })();
+  socket = new WebSocket(url);
+  socket.onclose = () => {
+    document.getElementById('status_bar').textContent = 'Disconnected — reconnecting…';
+    setTimeout(connect, 200);
+  };
+  socket.onopen = () => {
+    document.getElementById('status_bar').textContent = 'Connected';
+    let work = Promise.resolve();
+    socket.onmessage = async ev => {
+      work = work.then(async () => {
+        let outer;
+        try { outer = JSON.parse(ev.data); } catch(e) { return; }
+        let messages, fwd = false, src = null;
+        if (outer[0] && 'Forwarded' in outer[0]) {
+          src = outer[0].Forwarded.from_ed25519;
+          fwd = true;
+          try { messages = JSON.parse(outer[0].Forwarded.messages); } catch(e) { return; }
+        } else {
+          messages = outer;
+        }
+        for (const msg of messages) {
+          if (!fwd && ('YourEd25519' in msg || 'PleaseSignYourPub' in msg)) {
+            const k = msg.YourEd25519?.ed25519 || msg.PleaseSignYourPub?.ed25519;
+            if (k && !my_key) { my_key = k; on_identity(); }
+          }
+          if (fwd && 'MusicState' in msg) handle_music_state(src, msg);
+        }
+      });
+    };
+  };
+}
+
+async function fetch_status() {
+  try {
+    const r = await fetch('/status.json');
+    const d = await r.json();
+    if (!my_key && d.public_key) { my_key = strip_0x(d.public_key); on_identity(); }
+    known_peers = new Set((d.active_peers || []).map(p => strip_0x(p.pub)));
+    document.getElementById('peer_count').textContent = known_peers.size + manual_peers.size;
+  } catch(e) {}
+}
+
+// ── UI Handlers ────────────────────────────────────────────────────────────────
+function setWave(w) {
+  my_state.synth.waveform = w;
+  state_changed();
+  build_synth_section();
+}
+
+function shiftOctave(d) {
+  my_state.synth.octave = Math.max(1, Math.min(7, my_state.synth.octave + d));
+  state_changed();
+  document.getElementById('octave_disp').textContent = my_state.synth.octave;
+}
+
+document.getElementById('bpm_input').addEventListener('input', () => {
+  const v = parseInt(document.getElementById('bpm_input').value);
+  if (v >= 40 && v <= 300) { my_state.bpm = v; state_changed(); }
+});
+
+document.getElementById('synth_vol').addEventListener('input', () => {
+  my_state.synth.gain = parseInt(document.getElementById('synth_vol').value) / 100;
+  state_changed();
+});
+
+function toggleAddPeer() {
+  const w = document.getElementById('add_peer_wrap');
+  w.style.display = w.style.display === 'none' ? 'inline-flex' : 'none';
+}
+
+function addPeerKey() {
+  let k = document.getElementById('peer_key_input').value.trim();
+  k = strip_0x(k);
+  if (k.length !== 64) return;
+  manual_peers.add(k);
+  document.getElementById('peer_key_input').value = '';
+  document.getElementById('peer_count').textContent = known_peers.size + manual_peers.size;
+  send_to(k, true);
+  reset_backoff(true);
+}
+
+// ── Init ────────────────────────────────────────────────────────────────────────
+function on_identity() {
+  document.getElementById('my_key').textContent = fmt_key(my_key);
+  document.getElementById('my_key').title = my_key || '';
+  if (!sample_buf[my_key]) sample_buf[my_key] = [null, null];
+  render_all();
+  broadcast(false);
+}
+
+// Read peer from URL ?ed25519=...
+new URLSearchParams(location.search).forEach((v, k) => {
+  if (k === 'ed25519') { const key = strip_0x(v); if (key.length === 64) manual_peers.add(key); }
+});
+
+connect();
+reset_backoff(false);
+fetch_status();
+setInterval(fetch_status, 8000);
+render_all();
+</script>
+</body>
+</html>
