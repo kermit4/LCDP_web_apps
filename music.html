@@ -671,7 +671,7 @@ let rec_chunks = [];
 
 function start_recording(slot, btn) {
   if (active_rec) { active_rec.stop(); return; }
-  navigator.mediaDevices.getUserMedia({audio:true, video:false}).then(stream => {
+  navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false, noiseSuppression:false, autoGainControl:false}, video:false}).then(stream => {
     rec_chunks = [];
     const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
       ? 'audio/webm;codecs=opus'
