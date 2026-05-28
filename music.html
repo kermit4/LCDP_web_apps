@@ -168,7 +168,6 @@ const DRUM_LABEL   = {kick:'Kick', snare:'Snare', hihat_c:'HH cl', hihat_o:'HH o
 const NOTE_CYCLE   = [null,'C','D','E','F','G','A','B'];
 const NOTE_HZ      = {C:261.63, D:293.66, E:329.63, F:349.23, G:392.00, A:440.00, B:493.88};
 
-// pastel colors for up to 8 users
 const USER_BG = ['#deeeff','#ffe0dd','#dcf5dc','#fffbcc','#eeddff','#ccfaf0','#ffddf0','#ffe8cc'];
 
 // ── Global State ───────────────────────────────────────────────────────────────
@@ -178,7 +177,6 @@ let known_peers  = new Set();
 let manual_peers = new Set();
 function all_peers() { return new Set([...known_peers, ...manual_peers]); }
 
-// Global BPM agreed across all users (last-write-wins by timestamp)
 let global_bpm    = 120;
 let global_bpm_ts = 0;
 
@@ -215,8 +213,8 @@ function make_state() {
 }
 
 let my_state     = make_state();
-let peer_states  = {};   // key -> state
-let user_color   = {};   // key -> index
+let peer_states  = {};
+let user_color   = {};
 
 function color_for(key) {
   if (!(key in user_color)) user_color[key] = Object.keys(user_color).length % USER_BG.length;
@@ -289,11 +287,11 @@ function play_clap(t) {
 
 function play_drum(track, t) {
   switch (track) {
-    case 'kick':    play_kick(t);       break;
-    case 'snare':   play_snare(t);      break;
-    case 'hihat_c': play_hihat(t,false);break;
-    case 'hihat_o': play_hihat(t,true); break;
-    case 'clap':    play_clap(t);       break;
+    case 'kick':    play_kick(t);        break;
+    case 'snare':   play_snare(t);       break;
+    case 'hihat_c': play_hihat(t,false); break;
+    case 'hihat_o': play_hihat(t,true);  break;
+    case 'clap':    play_clap(t);        break;
   }
 }
 
@@ -342,7 +340,7 @@ let playing       = false;
 let seq_step      = 0;
 let next_t        = 0;
 let sched_timer   = null;
-const LOOKAHEAD   = 0.1;   // seconds ahead to schedule
+const LOOKAHEAD   = 0.1;
 const TICK_MS     = 25;
 
 function step_dur() { return 60.0 / global_bpm / 4; }
@@ -350,7 +348,6 @@ function step_dur() { return 60.0 / global_bpm / 4; }
 function fire_step(step, t) {
   const dur = step_dur();
 
-  // all users' drums
   function do_drums(st) {
     for (const tr of DRUM_TRACKS)
       if (st.drums[tr][step]) play_drum(tr, t);
@@ -358,7 +355,6 @@ function fire_step(step, t) {
   do_drums(my_state);
   for (const ps of Object.values(peer_states)) do_drums(ps);
 
-  // all users' synths
   function do_synth(st) {
     const s = st.synth;
     if (s.steps[step]) play_note(s.steps[step], s.octave, s.waveform, s.gain, t, dur * 0.88);
@@ -366,7 +362,6 @@ function fire_step(step, t) {
   do_synth(my_state);
   for (const ps of Object.values(peer_states)) do_synth(ps);
 
-  // samples: 8-step pattern, map into 16-step grid
   if (step < SAMPLE_STEPS) {
     function do_samples(st, key) {
       for (let sl = 0; sl < st.samples.length; sl++)
@@ -437,9 +432,7 @@ function make_step_btn(step, on, editable, cls, max_steps) {
   return btn;
 }
 
-// Drum rows
 function build_drum_section() {
-  // step numbers header
   const hdr = document.getElementById('drum_step_nums');
   hdr.innerHTML = '';
   for (let s = 0; s < DRUM_STEPS; s++) {
@@ -457,10 +450,7 @@ function build_drum_section() {
     for (const tr of DRUM_TRACKS) {
       const row = document.createElement('div');
       row.className = 'step-row';
-      row.style.background = bg;
-      row.style.borderRadius = '2px';
-      row.style.marginBottom = '1px';
-      row.style.padding = '1px 2px';
+      row.style.cssText = `background:${bg};border-radius:2px;margin-bottom:1px;padding:1px 2px;`;
 
       const ul = document.createElement('div');
       ul.className = 'row-label'; ul.title = key || '';
@@ -492,7 +482,6 @@ function build_drum_section() {
   for (const [k, ps] of Object.entries(peer_states)) add_user_drums(k, ps, false);
 }
 
-// Synth rows
 function build_synth_section() {
   const hdr = document.getElementById('synth_step_nums');
   hdr.innerHTML = '';
@@ -510,10 +499,7 @@ function build_synth_section() {
     const bg = is_me ? '#fffbee' : color_for(key);
     const row = document.createElement('div');
     row.className = 'step-row';
-    row.style.background = bg;
-    row.style.borderRadius = '2px';
-    row.style.marginBottom = '1px';
-    row.style.padding = '1px 2px';
+    row.style.cssText = `background:${bg};border-radius:2px;margin-bottom:1px;padding:1px 2px;`;
 
     const ul = document.createElement('div');
     ul.className = 'row-label'; ul.title = key || '';
@@ -548,7 +534,6 @@ function build_synth_section() {
   if (my_key) add_user_synth(my_key, my_state, true);
   for (const [k, ps] of Object.entries(peer_states)) add_user_synth(k, ps, false);
 
-  // Wave buttons
   for (const w of ['square','sawtooth','sine','triangle']) {
     const b = document.getElementById('wave_' + w);
     if (b) b.className = 'ctrl' + (my_state.synth.waveform === w ? ' on' : '');
@@ -556,7 +541,6 @@ function build_synth_section() {
   document.getElementById('octave_disp').textContent = my_state.synth.octave;
 }
 
-// Sampler
 function build_sampler() {
   const container = document.getElementById('sampler_ui');
   container.innerHTML = '';
@@ -567,7 +551,6 @@ function build_sampler() {
     const wrap = document.createElement('div');
     wrap.className = 'sample-slot';
 
-    // header
     const hdr = document.createElement('div');
     hdr.className = 'sample-hdr';
 
@@ -616,7 +599,6 @@ function build_sampler() {
     }
     wrap.appendChild(hdr);
 
-    // step pattern (8 steps)
     const step_row = document.createElement('div');
     step_row.className = 'step-row';
     step_row.style.padding = '2px';
@@ -641,10 +623,9 @@ function build_sampler() {
     }
     wrap.appendChild(step_row);
 
-    // Peer sample info
     const peer_lines = [];
     for (const [k, ps] of Object.entries(peer_states)) {
-      if (ps.samples[sl] && ps.samples[sl].data) {
+      if (ps.samples[sl] && ps.samples[sl].has_sample) {
         peer_lines.push(fmt_key(k) + ' — ' + (ps.samples[sl].name || '?'));
       }
     }
@@ -657,6 +638,13 @@ function build_sampler() {
 
     container.appendChild(wrap);
   }
+}
+
+// render_all rebuilds drums + synth peer rows. Sampler is only rebuilt explicitly
+// to avoid clobbering it on every peer state update.
+function render_peers() {
+  build_drum_section();
+  build_synth_section();
 }
 
 function render_all() {
@@ -709,7 +697,7 @@ function start_recording(slot, btn) {
 // ── Network ────────────────────────────────────────────────────────────────────
 let backoff_delay  = 500;
 let backoff_timer  = null;
-let backoff_full   = false;  // include sample audio in next retransmit?
+let backoff_full   = false;
 
 function strip_0x(s) { return s && s.startsWith('0x') ? s.slice(2) : s; }
 
@@ -719,10 +707,13 @@ function build_msg(include_samples) {
       bpm:   my_state.bpm,
       drums: my_state.drums,
       synth: my_state.synth,
+      // has_sample tells peers whether we have a sample even when data is omitted.
+      // This lets them distinguish "no sample" from "sample exists, data not in this packet".
       samples: my_state.samples.map(s => ({
-        name:  s.name,
-        data:  include_samples ? s.data : null,
-        steps: s.steps,
+        name:       s.name,
+        has_sample: s.data !== null,
+        data:       include_samples ? s.data : null,
+        steps:      s.steps,
       })),
       timestamp: my_state.timestamp,
     }
@@ -771,6 +762,10 @@ function do_backoff() {
 }
 
 function handle_music_state(from_key, msg) {
+  // Ignore echoes of our own messages. The server may include our own key in
+  // active_peers and forward our broadcasts back to us.
+  if (from_key === my_key) return;
+
   const ms = msg.MusicState;
   if (!ms || typeof ms.timestamp !== 'number') return;
   const old = peer_states[from_key];
@@ -792,29 +787,44 @@ function handle_music_state(from_key, msg) {
       gain:     ms.synth?.gain     ?? 0.6,
     },
     samples: (ms.samples || []).slice(0, 2).map((s, i) => ({
-      name:  s.name  || ('Sample ' + (i + 1)),
-      data:  s.data  || null,
-      steps: arr_or(s.steps, SAMPLE_STEPS),
+      name:       s.name       || ('Sample ' + (i + 1)),
+      has_sample: s.has_sample ?? (s.data !== null && s.data !== undefined),
+      data:       s.data       || null,
+      steps:      arr_or(s.steps, SAMPLE_STEPS),
     })),
     timestamp: ms.timestamp,
   };
   while (ps.samples.length < 2)
-    ps.samples.push({name:'Sample '+(ps.samples.length+1), data:null, steps:new Array(SAMPLE_STEPS).fill(false)});
+    ps.samples.push({name:'Sample '+(ps.samples.length+1), has_sample:false, data:null, steps:new Array(SAMPLE_STEPS).fill(false)});
 
   peer_states[from_key] = ps;
 
-  // Decode any new sample audio
   if (!sample_buf[from_key]) sample_buf[from_key] = [null, null];
   for (let sl = 0; sl < 2; sl++) {
-    const nd = ps.samples[sl].data, od = old?.samples?.[sl]?.data;
-    if (nd && nd !== od) decode_sample(from_key, sl, nd);
-    if (!nd)             sample_buf[from_key][sl] = null;
+    const nd  = ps.samples[sl].data;
+    const has = ps.samples[sl].has_sample;
+    const od  = old?.samples?.[sl]?.data;
+    if (nd && nd !== od) {
+      // New sample data arrived — decode it.
+      decode_sample(from_key, sl, nd);
+    } else if (!has) {
+      // Peer explicitly has no sample in this slot (not just omitted for bandwidth).
+      sample_buf[from_key][sl] = null;
+    }
+    // If has_sample=true but data=null, the peer has a sample but didn't include
+    // the data in this packet. Keep whatever buffer we already have.
   }
 
-  // Adopt BPM if peer is more recent
   adopt_bpm(ms.bpm, ms.timestamp);
 
-  render_all();
+  // Only rebuild drum/synth peer rows, not the sampler. The sampler reads from
+  // my_state which is never touched by incoming peer messages.
+  const sample_visible_changed = ps.samples.some((s, i) =>
+    s.has_sample !== (old?.samples?.[i]?.has_sample ?? false) ||
+    s.name       !== (old?.samples?.[i]?.name)
+  );
+  render_peers();
+  if (sample_visible_changed) build_sampler();
 }
 
 function arr_or(a, len, fill=false) {
@@ -865,7 +875,11 @@ async function fetch_status() {
     const r = await fetch('/status.json');
     const d = await r.json();
     if (!my_key && d.public_key) { my_key = strip_0x(d.public_key); on_identity(); }
-    known_peers = new Set((d.active_peers || []).map(p => strip_0x(p.pub)));
+    // Filter out own key — some server implementations include it in active_peers,
+    // which would cause us to send to ourselves and receive echoes.
+    known_peers = new Set(
+      (d.active_peers || []).map(p => strip_0x(p.pub)).filter(p => p !== my_key)
+    );
     document.getElementById('peer_count').textContent = known_peers.size + manual_peers.size;
   } catch(e) {}
 }
@@ -918,7 +932,6 @@ function on_identity() {
   broadcast(false);
 }
 
-// Read peer from URL ?ed25519=...
 new URLSearchParams(location.search).forEach((v, k) => {
   if (k === 'ed25519') { const key = strip_0x(v); if (key.length === 64) manual_peers.add(key); }
 });
