@@ -184,6 +184,7 @@ function adopt_bpm(bpm, ts) {
   if (ts >= global_bpm_ts) {
     global_bpm    = Math.max(40, Math.min(300, bpm));
     global_bpm_ts = ts;
+    my_state.bpm  = global_bpm;
     document.getElementById('bpm_input').value = global_bpm;
   }
 }
