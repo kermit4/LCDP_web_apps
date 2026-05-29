@@ -923,6 +923,53 @@ function addPeerKey() {
   reset_backoff(true);
 }
 
+// ── Synth keyboard navigation ──────────────────────────────────────────────────
+document.addEventListener('keydown', function(e) {
+  const btn = document.activeElement;
+  if (!btn || !btn.classList.contains('synth-btn') || btn.disabled) return;
+
+  const all = Array.from(document.querySelectorAll('#synth_rows .synth-btn:not([disabled])'));
+  const idx = all.indexOf(btn);
+  if (idx < 0) return;
+
+  function set_note(note) {
+    my_state.synth.steps[idx] = note;
+    btn.textContent = note || '·';
+    btn.classList.toggle('on', !!note);
+    state_changed();
+  }
+
+  function move(delta) {
+    const dest = idx + delta;
+    if (dest >= 0 && dest < all.length) all[dest].focus();
+  }
+
+  if (e.key === 'Backspace') {
+    e.preventDefault();
+    set_note(null);
+  } else if (e.key.length === 1 && e.key.toLowerCase() >= 'a' && e.key.toLowerCase() <= 'g') {
+    e.preventDefault();
+    set_note(e.key.toUpperCase());
+  } else if (e.key === '+' || e.key === '=') {
+    e.preventDefault();
+    const cur = NOTE_CYCLE.indexOf(my_state.synth.steps[idx]);
+    set_note(NOTE_CYCLE[(cur + 1) % NOTE_CYCLE.length]);
+  } else if (e.key === '-') {
+    e.preventDefault();
+    const cur = NOTE_CYCLE.indexOf(my_state.synth.steps[idx]);
+    set_note(NOTE_CYCLE[(cur - 1 + NOTE_CYCLE.length) % NOTE_CYCLE.length]);
+  } else if (e.key === 'ArrowLeft') {
+    e.preventDefault();
+    move(-1);
+  } else if (e.key === 'ArrowRight') {
+    e.preventDefault();
+    move(1);
+  } else if (e.key === 'Tab') {
+    e.preventDefault();
+    move(e.shiftKey ? -4 : 4);
+  }
+});
+
 // ── Init ────────────────────────────────────────────────────────────────────────
 function on_identity() {
   document.getElementById('my_key').textContent = fmt_key(my_key);
