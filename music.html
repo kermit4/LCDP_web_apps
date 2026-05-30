@@ -99,7 +99,7 @@ input[type=text], input[type=search] {
 
 <div id=topbar>
   <h1>Music Studio</h1>
-  <label style="font-size:12px;">BPM&nbsp;<input type=number id=bpm_input min=40 max=300 value=120></label>
+  <label style="font-size:12px;">BPM&nbsp;<input type=number id=bpm_input min=40 max=300 value=140></label>
   <button class=ctrl id=play_btn onclick="togglePlay()">&#9654; Play</button>
   <span style="font-size:11px;color:#666;margin-left:4px;">
     <span id=peer_count>0</span> peers &nbsp;|&nbsp; me:&nbsp;<span id=my_key title="">…</span>
@@ -177,7 +177,7 @@ let known_peers  = new Set();
 let manual_peers = new Set();
 function all_peers() { return new Set([...known_peers, ...manual_peers]); }
 
-let global_bpm    = 120;
+let global_bpm    = 140;
 let global_bpm_ts = 0;
 
 function adopt_bpm(bpm, ts) {
@@ -191,7 +191,7 @@ function adopt_bpm(bpm, ts) {
 
 function make_state() {
   return {
-    bpm:   120,
+    bpm:   140,
     drums: {
       kick:    new Array(DRUM_STEPS).fill(false),
       snare:   new Array(DRUM_STEPS).fill(false),
@@ -775,7 +775,7 @@ function handle_music_state(from_key, msg) {
   if (old && old.timestamp >= ms.timestamp) return;
 
   const ps = {
-    bpm:   ms.bpm || 120,
+    bpm:   ms.bpm || 140,
     drums: {
       kick:    arr_or(ms.drums?.kick,    DRUM_STEPS),
       snare:   arr_or(ms.drums?.snare,   DRUM_STEPS),
@@ -958,6 +958,14 @@ document.addEventListener('keydown', function(e) {
     const cur = NOTE_CYCLE.indexOf(my_state.synth.steps[idx]);
     set_note(NOTE_CYCLE[(cur + 1) % NOTE_CYCLE.length]);
   } else if (e.key === '-') {
+    e.preventDefault();
+    const cur = NOTE_CYCLE.indexOf(my_state.synth.steps[idx]);
+    set_note(NOTE_CYCLE[(cur - 1 + NOTE_CYCLE.length) % NOTE_CYCLE.length]);
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    const cur = NOTE_CYCLE.indexOf(my_state.synth.steps[idx]);
+    set_note(NOTE_CYCLE[(cur + 1) % NOTE_CYCLE.length]);
+  } else if (e.key === 'ArrowDown') {
     e.preventDefault();
     const cur = NOTE_CYCLE.indexOf(my_state.synth.steps[idx]);
     set_note(NOTE_CYCLE[(cur - 1 + NOTE_CYCLE.length) % NOTE_CYCLE.length]);
