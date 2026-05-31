@@ -46,7 +46,7 @@ code.ic { background:#e0e0e0; padding:1px 4px; border-radius:2px; font-size:92%;
   &nbsp;&nbsp;<span style="color:#999;font-size:10px;" title="Wrap code in triple backticks:&#10;&#96;&#96;&#96;rust&#10;fn main() {}&#10;&#96;&#96;&#96;&#10;Language optional — auto-detected if omitted.&#10;Inline: &#96;code&#96;">&#96;&#96;&#96;lang for code</span>
 </div>
 <div id=inputbar>
-  <textarea id=msg_input placeholder="Type a message -- Enter to send, Shift+Enter for newline" disabled></textarea>
+  <textarea id=msg_input placeholder="Type a message -- Ctrl+Enter to send, Enter for newline" disabled></textarea>
   <button id=send_btn disabled>Send</button>
 </div>
 
@@ -603,7 +603,7 @@ function send_message() {
 
 document.getElementById('send_btn').onclick = send_message;
 document.getElementById('msg_input').addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send_message(); }
+    if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); send_message(); }
 });
 
 // Register service worker for browser notifications (bypasses Chromium's suppression
