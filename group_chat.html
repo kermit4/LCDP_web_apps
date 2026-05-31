@@ -119,9 +119,8 @@ function fmt_ts(ts) {
     return new Date(Math.round(ts / 1000) * 1000).toLocaleString();
 }
 
-// Regex matches any URI with an explicit scheme (scheme://...).
-// Strips trailing punctuation that is likely sentence punctuation, not part of the URL.
-const URL_RE = /([a-zA-Z][a-zA-Z0-9+\-.]*:\/\/[^\s<>"]*[^\s<>".,:;!?()'"])/g;
+// Matches URLs (scheme://...) or 64-hex-char hashes in isolation.
+const URL_RE = /([a-zA-Z][a-zA-Z0-9+\-.]*:\/\/[^\s<>"]*[^\s<>".,:;!?()'"])|(\b[0-9a-fA-F]{64}\b)/g;
 
 function append_text_with_links(el, text) {
     let last = 0, m;
@@ -129,12 +128,17 @@ function append_text_with_links(el, text) {
     while ((m = URL_RE.exec(text)) !== null) {
         if (m.index > last) el.appendChild(document.createTextNode(text.slice(last, m.index)));
         const a = document.createElement('a');
-        a.href = m[1];
+        if (m[1]) {
+            a.href = m[1];
+            a.textContent = m[1];
+        } else {
+            a.href = '/' + m[2];
+            a.textContent = m[2];
+        }
         a.target = '_blank';
         a.rel = 'noopener noreferrer';
-        a.textContent = m[1];
         el.appendChild(a);
-        last = m.index + m[1].length;
+        last = m.index + m[0].length;
     }
     if (last < text.length) el.appendChild(document.createTextNode(text.slice(last)));
 }
