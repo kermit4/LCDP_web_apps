@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CJP2P Horizon</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #f5f5f5; color: #111; font-family: sans-serif; }
+header { background: #fff; border-bottom: 1px solid #ccc; padding: 8px 16px;
+         display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+header h1 { color: #0055cc; font-size: 20px; letter-spacing: 2px; }
+#ws-badge { font-size: 13px; padding: 3px 10px; border-radius: 3px; white-space: nowrap; }
+#my-pub { font-size: 12px; font-family: 'Courier New', monospace; color: #7722bb;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
+#header-right { margin-left: auto; font-size: 13px; color: #666; white-space: nowrap; }
+nav { background: #ebebeb; border-bottom: 1px solid #ccc;
+      padding: 5px 16px; display: flex; gap: 8px; flex-wrap: wrap; }
+nav a { color: #0055cc; text-decoration: none; font-size: 14px;
+        padding: 2px 10px; border: 1px solid #ccc; border-radius: 3px; }
+nav a:hover { background: #fff; border-color: #0055cc; }
+#status-bar { padding: 5px 16px; font-size: 13px; color: #666;
+              background: #fff; border-bottom: 1px solid #eee; }
+#canvas-wrap { display: flex; justify-content: center; padding: 20px 16px; }
+canvas { border: 1px solid #ccc; max-width: 100%; display: block; }
+#tooltip { position: fixed; background: rgba(255,255,255,0.97);
+           border: 1px solid #aaa; padding: 7px 11px; font-size: 12px;
+           font-family: 'Courier New', monospace; pointer-events: none;
+           display: none; border-radius: 4px; max-width: 420px;
+           word-break: break-all; box-shadow: 0 2px 8px rgba(0,0,0,0.12); z-index: 100; }
+#tooltip b { font-family: sans-serif; color: #555; font-size: 11px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>HORIZON</h1>
+  <span id="ws-badge" style="font-size:13px;padding:3px 10px;border-radius:3px;
+        background:#fff8e0;color:#7a5200;border:1px solid #7a5200;">connecting…</span>
+  <span id="my-pub"></span>
+  <span id="header-right"></span>
+</header>
+
+<nav>
+  <a href="index.html">index</a>
+  <a href="dashboard.html">dashboard</a>
+  <a href="group_chat.html">group chat</a>
+  <a href="chat.html">chat</a>
+</nav>
+
+<div id="status-bar">Waiting for data…</div>
+
+<div id="canvas-wrap">
+  <canvas id="c" width="960" height="520"></canvas>
+</div>
+
+<div id="tooltip"></div>
+
+<script>
+const BASE = 'http://localhost:24255';
+const WS_URL = 'ws://localhost:24255/wt';
+
+const canvas  = document.getElementById('c');
+const ctx     = canvas.getContext('2d');
+const tooltip = document.getElementById('tooltip');
+const statusEl = document.getElementById('status-bar');
+
+const W = canvas.width;
+const H = canvas.height;
+const HORIZON_Y = Math.round(H * 0.30);  // horizon line y
+const MAX_DELAY  = 250;                    // active peer ceiling (ms)
+const MARGIN_X   = 50;                    // left/right margin
+
+let peers = [];
+let peerHitboxes = [];  // [{x,y,r,peer}]
+let myPub = null;
+
+// ── WebSocket (identity only) ────────────────────────────────────────────────
+function connectWS() {
+  const ws = new WebSocket(WS_URL);
+  ws.onopen  = () => setBadge('connected');
+  ws.onclose = () => { setBadge('disconnected'); setTimeout(connectWS, 3000); };
+  ws.onerror = () => { setBadge('disconnected'); };
+  ws.onmessage = e => {
+    try {
+      for (const msg of JSON.parse(e.data)) {
+        const key = msg.YourEd25519 || msg.PleaseSignYourPub;
+        if (key) {
+          myPub = key.ed25519;
+          document.getElementById('my-pub').textContent = myPub;
+        }
+      }
+    } catch {}
+  };
+}
+
+function setBadge(state) {
+  const b = document.getElementById('ws-badge');
+  const styles = {
+    connected:    ['#e8ffe8', '#1a7a2e'],
+    disconnected: ['#ffe8e8', '#cc2200'],
+  };
+  const [bg, fg] = styles[state] || ['#fff8e0', '#7a5200'];
+  b.textContent = state;
+  b.style.background = bg;
+  b.style.color = fg;
+  b.style.border = `1px solid ${fg}`;
+}
+
+// ── Data fetch ───────────────────────────────────────────────────────────────
+async function fetchPeers() {
+  try {
+    const r    = await fetch(`${BASE}/status.json`);
+    const data = await r.json();
+    peers = data.active_peers || [];
+    const now = new Date().toLocaleTimeString();
+    document.getElementById('header-right').textContent =
+      `updated ${now}`;
+    statusEl.textContent =
+      `${peers.length} peer(s) · total ${data.total_peers ?? '?'} known · ` +
+      `version ${data.version || '?'}`;
+    draw();
+  } catch (err) {
+    statusEl.textContent = `Fetch error: ${err.message}`;
+  }
+}
+
+// ── Perspective mapping ──────────────────────────────────────────────────────
+
+// delay 0 → near bottom;  delay MAX → just above horizon
+function delayToY(ms) {
+  const t = Math.min(ms, MAX_DELAY) / MAX_DELAY;  // 0..1
+  const bottom = H - 36;
+  const top    = HORIZON_Y + 8;
+  // non-linear: compress more near the horizon (perspective feel)
+  return bottom - Math.pow(t, 0.7) * (bottom - top);
+}
+
+// delay 0 → big;  delay MAX → tiny
+function delayToRadius(ms) {
+  const t = Math.min(ms, MAX_DELAY) / MAX_DELAY;
+  return 30 * Math.pow(1 - t, 0.6) + 4;  // 34px → 4px
+}
+
+// stable X spread from pub key bytes
+function pubToX(pub) {
+  const h = pub.replace('0x', '');
+  const n = parseInt(h.slice(4, 12), 16);   // 4 bytes → 32 bits
+  const usable = W - MARGIN_X * 2;
+  return MARGIN_X + (n % usable);
+}
+
+// blue-green for near, slate for far
+function delayToColor(ms) {
+  const t = Math.min(ms, MAX_DELAY) / MAX_DELAY;
+  const r = Math.round(20  + t * 110);
+  const g = Math.round(110 - t * 60);
+  const b = Math.round(200 - t * 70);
+  return { r, g, b, css: `rgb(${r},${g},${b})` };
+}
+
+// ── Drawing ──────────────────────────────────────────────────────────────────
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+
+  // sky
+  const sky = ctx.createLinearGradient(0, 0, 0, HORIZON_Y);
+  sky.addColorStop(0, '#b8d8f0');
+  sky.addColorStop(1, '#daeefe');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, HORIZON_Y);
+
+  // ground
+  const ground = ctx.createLinearGradient(0, HORIZON_Y, 0, H);
+  ground.addColorStop(0, '#bdd4a0');
+  ground.addColorStop(1, '#9ab87e');
+  ctx.fillStyle = ground;
+  ctx.fillRect(0, HORIZON_Y, W, H - HORIZON_Y);
+
+  // perspective grid on ground
+  const vp = W / 2;
+  ctx.strokeStyle = 'rgba(80,110,60,0.18)';
+  ctx.lineWidth = 1;
+  for (let i = -10; i <= 10; i++) {
+    ctx.beginPath();
+    ctx.moveTo(vp, HORIZON_Y);
+    ctx.lineTo(vp + i * 80, H);
+    ctx.stroke();
+  }
+  let gy = HORIZON_Y + 15;
+  while (gy < H) {
+    ctx.beginPath();
+    ctx.moveTo(0, gy);
+    ctx.lineTo(W, gy);
+    ctx.stroke();
+    gy += (gy - HORIZON_Y) * 0.45 + 8;
+  }
+
+  // horizon line
+  ctx.strokeStyle = '#7a9a60';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, HORIZON_Y);
+  ctx.lineTo(W, HORIZON_Y);
+  ctx.stroke();
+
+  // delay guide lines (dashed)
+  ctx.setLineDash([4, 5]);
+  ctx.lineWidth = 1;
+  for (const ms of [50, 100, 150, 200]) {
+    const gy2 = delayToY(ms);
+    ctx.strokeStyle = 'rgba(120,120,120,0.28)';
+    ctx.beginPath();
+    ctx.moveTo(0, gy2);
+    ctx.lineTo(W - 44, gy2);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(80,80,80,0.55)';
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${ms}ms`, W - 42, gy2 + 4);
+  }
+  ctx.setLineDash([]);
+
+  // sort: draw far (high delay) first so near peers overlap them
+  const sorted = [...peers].sort((a, b) => b.delay_ms - a.delay_ms);
+  peerHitboxes = [];
+
+  for (const peer of sorted) {
+    const x   = pubToX(peer.pub);
+    const y   = delayToY(peer.delay_ms);
+    const r   = delayToRadius(peer.delay_ms);
+    const col = delayToColor(peer.delay_ms);
+
+    // ground shadow (projected ellipse)
+    const shadowY = H - 22;
+    const sgr = ctx.createRadialGradient(x, shadowY, 0, x, shadowY, r * 1.4);
+    sgr.addColorStop(0, 'rgba(0,0,0,0.18)');
+    sgr.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = sgr;
+    ctx.beginPath();
+    ctx.ellipse(x, shadowY, r * 1.6, r * 0.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // glow
+    ctx.shadowColor = col.css;
+    ctx.shadowBlur  = r;
+
+    // node sphere (radial gradient for 3-D feel)
+    const ng = ctx.createRadialGradient(x - r*0.35, y - r*0.35, r*0.05, x, y, r);
+    ng.addColorStop(0, '#ffffff');
+    ng.addColorStop(0.35, col.css);
+    ng.addColorStop(1, `rgba(${col.r},${col.g},${col.b},0.6)`);
+    ctx.fillStyle = ng;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // ring
+    ctx.strokeStyle = `rgba(${col.r - 20},${col.g - 20},${col.b - 20},0.4)`;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // label (only for larger nodes)
+    if (r >= 10) {
+      const fs = Math.max(8, Math.round(r * 0.52));
+      const label = peer.pub.replace('0x', '').slice(0, 8) + '…';
+      ctx.fillStyle = '#222';
+      ctx.font = `${fs}px monospace`;
+      ctx.textAlign = 'center';
+      ctx.fillText(label, x, y + r + fs + 2);
+      if (r >= 14) {
+        ctx.fillStyle = '#555';
+        ctx.font = `${Math.max(8, fs - 2)}px sans-serif`;
+        ctx.fillText(`${Math.round(peer.delay_ms)} ms`, x, y + r + fs * 2 + 2);
+      }
+    }
+
+    peerHitboxes.push({ x, y, r, peer });
+  }
+
+  // axis label
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#666';
+  ctx.font = '12px sans-serif';
+  ctx.fillText('↑ far   ↓ near', 8, HORIZON_Y - 6);
+  ctx.fillText(`${peers.length} peer${peers.length !== 1 ? 's' : ''}`, 8, H - 6);
+}
+
+// ── Tooltip ──────────────────────────────────────────────────────────────────
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = W / rect.width;
+  const scaleY = H / rect.height;
+  const mx = (e.clientX - rect.left) * scaleX;
+  const my = (e.clientY - rect.top)  * scaleY;
+
+  let hit = null;
+  for (const h of peerHitboxes) {
+    const dx = mx - h.x, dy = my - h.y;
+    if (dx*dx + dy*dy <= (h.r + 6) * (h.r + 6)) { hit = h; break; }
+  }
+
+  if (hit) {
+    tooltip.style.display = 'block';
+    tooltip.style.left = (e.clientX + 16) + 'px';
+    tooltip.style.top  = (e.clientY - 8)  + 'px';
+    const pub = hit.peer.pub.replace('0x', '');
+    tooltip.innerHTML =
+      `<b>ed25519</b><br>${pub}<br><br>` +
+      `<b>delay</b>&nbsp;&nbsp;${Math.round(hit.peer.delay_ms)} ms<br>` +
+      `<b>addr</b>&nbsp;&nbsp;&nbsp;${hit.peer.addr}<br><br>` +
+      `<span style="color:#0055cc;font-family:sans-serif">click to open chat</span>`;
+    canvas.style.cursor = 'pointer';
+  } else {
+    tooltip.style.display = 'none';
+    canvas.style.cursor = 'default';
+  }
+});
+
+canvas.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = W / rect.width;
+  const scaleY = H / rect.height;
+  const mx = (e.clientX - rect.left) * scaleX;
+  const my = (e.clientY - rect.top)  * scaleY;
+
+  for (const h of peerHitboxes) {
+    const dx = mx - h.x, dy = my - h.y;
+    if (dx*dx + dy*dy <= (h.r + 6) * (h.r + 6)) {
+      const pub = h.peer.pub.replace('0x', '');
+      window.open(`chat.html?ed25519=${pub}`, '_blank');
+      break;
+    }
+  }
+});
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+connectWS();
+fetchPeers();
+setInterval(fetchPeers, 5000);
+</script>
+</body>
+</html>
