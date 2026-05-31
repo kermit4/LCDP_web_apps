@@ -25,6 +25,11 @@ body { font-family: monospace; background: #f5f5f5; color: #111; display: flex; 
 #send_btn:disabled { background: #aaa; cursor: default; }
 #statusbar { padding: 3px 10px; background: #e8e8e8; font-size: 11px; color: #555; border-top: 1px solid #ccc; flex-shrink: 0; }
 a { color: #3a7bd5; }
+pre.code-block { background:#1e1e1e; color:#d4d4d4; padding:8px 12px; border-radius:4px; overflow-x:auto; margin:4px 0 2px 0; font-size:12px; line-height:1.45; position:relative; max-width:100%; }
+pre.code-block code { font-family:monospace; }
+.code-lang { position:absolute; top:3px; right:8px; font-size:10px; color:#777; }
+code.ic { background:#e0e0e0; padding:1px 4px; border-radius:2px; font-size:92%; color:#333; }
+.hl-kw{color:#569cd6}.hl-ty{color:#4ec9b0}.hl-st{color:#ce9178}.hl-cm{color:#6a9955;font-style:italic}.hl-nm{color:#b5cea8}.hl-mc{color:#c586c0}.hl-at{color:#c586c0}.hl-lt{color:#9cdcfe}.hl-fn{color:#dcdcaa}
 </style>
 </head>
 <body>
@@ -38,6 +43,7 @@ a { color: #3a7bd5; }
   <span id=status_text>connecting...</span>
   &nbsp;&nbsp;me: <span id=my_pub_display title="">...</span>
   &nbsp;&nbsp;<button id=notif_btn style="font-size:11px;padding:1px 6px;cursor:pointer;">Enable notifications</button>
+  &nbsp;&nbsp;<span style="color:#999;font-size:10px;" title="Wrap code in triple backticks:&#10;&#96;&#96;&#96;rust&#10;fn main() {}&#10;&#96;&#96;&#96;&#10;Language optional — auto-detected if omitted.&#10;Inline: &#96;code&#96;">&#96;&#96;&#96;lang for code</span>
 </div>
 <div id=inputbar>
   <textarea id=msg_input placeholder="Type a message -- Enter to send, Shift+Enter for newline" disabled></textarea>
@@ -133,6 +139,167 @@ function append_text_with_links(el, text) {
     if (last < text.length) el.appendChild(document.createTextNode(text.slice(last)));
 }
 
+// ---- syntax highlighting ------------------------------------------------
+
+const RUST_KW = new Set('as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while'.split(' '));
+const RUST_TY = new Set('bool char f32 f64 i8 i16 i32 i64 i128 isize str u8 u16 u32 u64 u128 usize String Vec Box Rc Arc Option Result Some None Ok Err HashMap BTreeMap HashSet'.split(' '));
+
+function hl_escape(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+const RUST_RE = /\/\/[^\n]*|\/\*[\s\S]*?\*\/|r#*"[\s\S]*?"#*|b?"(?:[^"\\]|\\.)*"|b?'(?:[^'\\]|\\.)'|#!?\[[^\]]*\]|'[a-zA-Z_]\w*|[a-zA-Z_]\w*!|\b0x[0-9a-fA-F_]+\w*|\b0b[01_]+\w*|\b0o[0-7_]+\w*|\b\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?\w*|[A-Z]\w*|[a-z_]\w*/g;
+
+function tok_classify_rust(t, nx) {
+    if (t[0]==='/') return 'cm';
+    if (t[0]==='"' || (t[0]==='b'&&(t[1]==='"'||t[1]==="'")) || t.startsWith('r"') || t.startsWith('r#')) return 'st';
+    if (t[0]==="'" && t[t.length-1]==="'" && t.length>=3) return 'st';
+    if (t[0]==="'") return 'lt';
+    if (t[0]==='#') return 'at';
+    if (t[t.length-1]==='!') return 'mc';
+    if (/^\d/.test(t)) return 'nm';
+    if (/^[A-Z]/.test(t)) return 'ty';
+    if (RUST_KW.has(t)) return 'kw';
+    if (RUST_TY.has(t)) return 'ty';
+    if (nx==='(') return 'fn';
+    return '';
+}
+
+function tokenize(code, re, classify_fn) {
+    const out = [];
+    let last = 0, m;
+    re.lastIndex = 0;
+    while ((m = re.exec(code)) !== null) {
+        if (m.index > last) out.push(['', code.slice(last, m.index)]);
+        out.push([classify_fn(m[0], code[m.index + m[0].length] || ''), m[0]]);
+        last = m.index + m[0].length;
+    }
+    if (last < code.length) out.push(['', code.slice(last)]);
+    return out;
+}
+
+const JS_KW    = new Set('break case catch class const continue debugger default delete do else export extends false finally for function if import in instanceof let new null return static super switch this throw true try typeof undefined var void while with yield async await of'.split(' '));
+const PY_KW    = new Set('False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield'.split(' '));
+const SH_KW    = new Set('if then else elif fi for while do done case esac function in return export local readonly'.split(' '));
+const CLIKE_KW = new Set('if else for while do return break continue switch case default struct enum class typedef void int long short float double bool char unsigned signed true false null nullptr NULL new delete sizeof typeof'.split(' '));
+
+function get_kw(lang) {
+    if (/^(js|javascript|ts|typescript)$/.test(lang)) return JS_KW;
+    if (/^(py|python)$/.test(lang)) return PY_KW;
+    if (/^(sh|bash|shell|zsh)$/.test(lang)) return SH_KW;
+    return new Set();
+}
+
+function toks_to_html(toks) {
+    return toks.map(([cls,t]) => cls ? `<span class="hl-${cls}">${hl_escape(t)}</span>` : hl_escape(t)).join('');
+}
+
+const CLIKE_RE = /\/\/[^\n]*|\/\*[\s\S]*?\*\/|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\b\d[\d.]*(?:[eE][+-]?\d+)?\w*|\b[a-zA-Z_]\w*/g;
+
+function highlight_code(code, lang) {
+    if (!lang || lang==='text' || lang==='plain') return hl_escape(code);
+    if (lang==='rust' || lang==='rs') return toks_to_html(tokenize(code, RUST_RE, tok_classify_rust));
+    if (/^(c-like|c|cpp|c\+\+|java|go|swift|kotlin|cs|csharp)$/.test(lang)) {
+        return toks_to_html(tokenize(code, CLIKE_RE, (t, nx) => {
+            if (t.startsWith('//')||t.startsWith('/*')) return 'cm';
+            if (t[0]==='"'||t[0]==="'") return 'st';
+            if (/^\d/.test(t)) return 'nm';
+            if (CLIKE_KW.has(t)) return 'kw';
+            if (/^[A-Z][A-Z0-9_]*$/.test(t)) return 'ty'; // ALL_CAPS constant
+            if (/^[A-Z]/.test(t)) return 'ty';
+            if (nx==='(') return 'fn';
+            return '';
+        }));
+    }
+    const hash_cm = /^(py|python|rb|ruby|sh|bash|shell|zsh|toml|yaml|yml)$/.test(lang);
+    const rp = ['\\/\\/[^\\n]*', '\\/\\*[\\s\\S]*?\\*\\/'];
+    if (hash_cm) rp.push('#[^\\n]*');
+    rp.push('"(?:[^"\\\\]|\\\\.)*"', "'(?:[^'\\\\]|\\\\.)*'", '\\b\\d[\\d.]*\\b', '[a-zA-Z_]\\w*');
+    const re = new RegExp(rp.join('|'), 'g');
+    const kw = get_kw(lang);
+    return toks_to_html(tokenize(code, re, (t, nx) => {
+        if (t.startsWith('//')||t.startsWith('/*')||(hash_cm&&t[0]==='#')) return 'cm';
+        if (t[0]==='"'||t[0]==="'") return 'st';
+        if (/^\d/.test(t)) return 'nm';
+        if (kw.has(t)) return 'kw';
+        if (/^[A-Z]/.test(t)) return 'ty';
+        if (nx==='(') return 'fn';
+        return '';
+    }));
+}
+
+function detect_lang(hint, code) {
+    if (hint) {
+        const MAP = {rs:'rust',js:'javascript',ts:'typescript',py:'python',sh:'sh',bash:'sh',zsh:'sh',shell:'sh'};
+        const h = hint.toLowerCase().trim();
+        return MAP[h] || h;
+    }
+    if (/\bfn\s+\w+\s*[(<]|\blet\s+(?:mut\s+)?\w+\s*[=:]|\bimpl\b|\buse\s+\w+::|#\[/.test(code)) return 'rust';
+    if (/\bdef\s+\w+\s*\(|\bimport\s+\w+|\belif\b/.test(code)) return 'python';
+    if (/\bconst\s+\w+\s*=|\bfunction\s+\w+\s*\(|\blet\s+\w+\s*=.*=>/.test(code)) return 'javascript';
+    if (/^\s*#!\/|^\$ /.test(code)) return 'sh';
+    if (/\{[\s\S]*?\}/.test(code)) return 'c-like';
+    return 'text';
+}
+
+function parse_message(text) {
+    const segs = [];
+    const block_re = /```([^\n`]*)\n([\s\S]*?)```/g;
+    let last = 0, m;
+    while ((m = block_re.exec(text)) !== null) {
+        if (m.index > last) segs.push(...parse_inline_text(text.slice(last, m.index)));
+        segs.push({type:'code_block', lang:m[1].trim(), code:m[2]});
+        last = m.index + m[0].length;
+    }
+    if (last < text.length) segs.push(...parse_inline_text(text.slice(last)));
+    return segs;
+}
+
+function parse_inline_text(text) {
+    const segs = [];
+    const re = /`([^`\n]+)`/g;
+    let last = 0, m;
+    while ((m = re.exec(text)) !== null) {
+        if (m.index > last) segs.push({type:'text', text:text.slice(last, m.index)});
+        segs.push({type:'inline_code', code:m[1]});
+        last = m.index + m[0].length;
+    }
+    if (last < text.length) segs.push({type:'text', text:text.slice(last)});
+    return segs;
+}
+
+function render_message_text(row, msg_text) {
+    let span = document.createElement('span');
+    span.className = 'msg-text';
+    span.appendChild(document.createTextNode(': '));
+    row.appendChild(span);
+    for (const seg of parse_message(msg_text)) {
+        if (seg.type === 'code_block') {
+            span = null;
+            const lang = detect_lang(seg.lang, seg.code);
+            const pre = document.createElement('pre');
+            pre.className = 'code-block';
+            if (lang && lang !== 'text') {
+                const lbl = document.createElement('span');
+                lbl.className = 'code-lang';
+                lbl.textContent = lang;
+                pre.appendChild(lbl);
+            }
+            const ce = document.createElement('code');
+            ce.innerHTML = highlight_code(seg.code, lang);
+            pre.appendChild(ce);
+            row.appendChild(pre);
+        } else {
+            if (!span) { span = document.createElement('span'); span.className = 'msg-text'; row.appendChild(span); }
+            if (seg.type === 'inline_code') {
+                const c = document.createElement('code'); c.className = 'ic'; c.textContent = seg.code; span.appendChild(c);
+            } else {
+                append_text_with_links(span, seg.text);
+            }
+        }
+    }
+}
+
+// -------------------------------------------------------------------------
+
 function render_messages() {
     const msgs = load_messages().sort((a, b) => a.timestamp - b.timestamp);
     const container = document.getElementById('messages');
@@ -157,12 +324,8 @@ function render_messages() {
         meta.appendChild(ts_span);
         meta.appendChild(key_link);
 
-        const text_el = document.createElement('span');
-        text_el.className = 'msg-text';
-        append_text_with_links(text_el, ': ' + m.text);
-
         row.appendChild(meta);
-        row.appendChild(text_el);
+        render_message_text(row, m.text);
         container.appendChild(row);
     }
     if (at_bottom) container.scrollTop = container.scrollHeight;
