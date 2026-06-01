@@ -35,7 +35,7 @@ canvas { border: 1px solid #ccc; max-width: 100%; display: block; }
 <header>
   <h1>HORIZON</h1>
   <span id="ws-badge" style="font-size:13px;padding:3px 10px;border-radius:3px;
-        background:#fff8e0;color:#7a5200;border:1px solid #7a5200;">connecting…</span>
+        background:#fff8e0;color:#7a5200;border:1px solid #7a5200;">connecting...</span>
   <span id="my-pub"></span>
   <span id="header-right"></span>
 </header>
@@ -47,7 +47,7 @@ canvas { border: 1px solid #ccc; max-width: 100%; display: block; }
   <a href="chat.html">chat</a>
 </nav>
 
-<div id="status-bar">Waiting for data…</div>
+<div id="status-bar">Waiting for data...</div>
 
 <div id="canvas-wrap">
   <canvas id="c" width="960" height="520"></canvas>
@@ -74,7 +74,7 @@ let peers = [];
 let peerHitboxes = [];  // [{x,y,r,peer}]
 let myPub = null;
 
-// ── WebSocket (identity only) ────────────────────────────────────────────────
+// -- WebSocket (identity only) ------------------------------------------------
 function connectWS() {
   const ws = new WebSocket(WS_URL);
   ws.onopen  = () => setBadge('connected');
@@ -106,7 +106,7 @@ function setBadge(state) {
   b.style.border = `1px solid ${fg}`;
 }
 
-// ── Data fetch ───────────────────────────────────────────────────────────────
+// -- Data fetch ---------------------------------------------------------------
 async function fetchPeers() {
   try {
     const r    = await fetch(`${BASE}/status.json`);
@@ -116,7 +116,7 @@ async function fetchPeers() {
     document.getElementById('header-right').textContent =
       `updated ${now}`;
     statusEl.textContent =
-      `${peers.length} peer(s) · total ${data.total_peers ?? '?'} known · ` +
+      `${peers.length} peer(s) ? total ${data.total_peers ?? '?'} known ? ` +
       `version ${data.version || '?'}`;
     draw();
   } catch (err) {
@@ -124,9 +124,54 @@ async function fetchPeers() {
   }
 }
 
-// ── Perspective mapping ──────────────────────────────────────────────────────
+// -- Pub coloring (same nibble scheme as group_chat.html) ---------------------
+const NIBBLE_COLORS = ['#111','#c0392b','#27ae60','#b7950b','#2471a3','#7d3c98','#148f77','#888'];
 
-// delay 0 → near bottom;  delay MAX → just above horizon
+function coloredPubHtml(pub) {
+  const hex = pub.replace('0x', '');
+  let html = '';
+  for (let i = 0; i < 5 && i < hex.length; i++) {
+    const nibble = parseInt(hex[i], 16);
+    const color  = NIBBLE_COLORS[nibble & 7];
+    if (nibble & 8) {
+      html += `<span style="background:${color};color:#fff;padding:0 1px">${hex[i]}</span>`;
+    } else {
+      html += `<span style="color:${color}">${hex[i]}</span>`;
+    }
+  }
+  html += hex.slice(5);
+  return html;
+}
+
+function drawColoredPubLabel(ctx, pub, cx, baseY, fs) {
+  const hex    = pub.replace('0x', '');
+  const colored = hex.slice(0, 5);
+  const plain   = hex.slice(5, 8) + '...';
+  ctx.font = `${fs}px monospace`;
+  const cw   = ctx.measureText('0').width;
+  let curX   = cx - cw * (colored.length + plain.length) / 2;
+  ctx.textAlign = 'left';
+  for (let i = 0; i < colored.length; i++) {
+    const nibble = parseInt(colored[i], 16);
+    const color  = NIBBLE_COLORS[nibble & 7];
+    if (nibble & 8) {
+      ctx.fillStyle = color;
+      ctx.fillRect(curX, baseY - fs + 2, cw, fs);
+      ctx.fillStyle = '#fff';
+    } else {
+      ctx.fillStyle = color;
+    }
+    ctx.fillText(colored[i], curX, baseY);
+    curX += cw;
+  }
+  ctx.fillStyle = '#222';
+  ctx.fillText(plain, curX, baseY);
+  ctx.textAlign = 'center';
+}
+
+// -- Perspective mapping ------------------------------------------------------
+
+// delay 0 -> near bottom;  delay MAX -> just above horizon
 function delayToY(ms) {
   const t = Math.min(ms, MAX_DELAY) / MAX_DELAY;  // 0..1
   const bottom = H - 36;
@@ -135,16 +180,16 @@ function delayToY(ms) {
   return bottom - Math.pow(t, 0.7) * (bottom - top);
 }
 
-// delay 0 → big;  delay MAX → tiny
+// delay 0 -> big;  delay MAX -> tiny
 function delayToRadius(ms) {
   const t = Math.min(ms, MAX_DELAY) / MAX_DELAY;
-  return 30 * Math.pow(1 - t, 0.6) + 4;  // 34px → 4px
+  return 30 * Math.pow(1 - t, 0.6) + 4;  // 34px -> 4px
 }
 
 // stable X spread from pub key bytes
 function pubToX(pub) {
   const h = pub.replace('0x', '');
-  const n = parseInt(h.slice(4, 12), 16);   // 4 bytes → 32 bits
+  const n = parseInt(h.slice(4, 12), 16);   // 4 bytes -> 32 bits
   const usable = W - MARGIN_X * 2;
   return MARGIN_X + (n % usable);
 }
@@ -158,7 +203,7 @@ function delayToColor(ms) {
   return { r, g, b, css: `rgb(${r},${g},${b})` };
 }
 
-// ── Drawing ──────────────────────────────────────────────────────────────────
+// -- Drawing ------------------------------------------------------------------
 function draw() {
   ctx.clearRect(0, 0, W, H);
 
@@ -263,11 +308,7 @@ function draw() {
     // label (only for larger nodes)
     if (r >= 10) {
       const fs = Math.max(8, Math.round(r * 0.52));
-      const label = peer.pub.replace('0x', '').slice(0, 8) + '…';
-      ctx.fillStyle = '#222';
-      ctx.font = `${fs}px monospace`;
-      ctx.textAlign = 'center';
-      ctx.fillText(label, x, y + r + fs + 2);
+      drawColoredPubLabel(ctx, peer.pub, x, y + r + fs + 2, fs);
       if (r >= 14) {
         ctx.fillStyle = '#555';
         ctx.font = `${Math.max(8, fs - 2)}px sans-serif`;
@@ -282,11 +323,11 @@ function draw() {
   ctx.textAlign = 'left';
   ctx.fillStyle = '#666';
   ctx.font = '12px sans-serif';
-  ctx.fillText('↑ far   ↓ near', 8, HORIZON_Y - 6);
+  ctx.fillText('? far   ? near', 8, HORIZON_Y - 6);
   ctx.fillText(`${peers.length} peer${peers.length !== 1 ? 's' : ''}`, 8, H - 6);
 }
 
-// ── Tooltip ──────────────────────────────────────────────────────────────────
+// -- Tooltip ------------------------------------------------------------------
 canvas.addEventListener('mousemove', e => {
   const rect = canvas.getBoundingClientRect();
   const scaleX = W / rect.width;
@@ -306,7 +347,7 @@ canvas.addEventListener('mousemove', e => {
     tooltip.style.top  = (e.clientY - 8)  + 'px';
     const pub = hit.peer.pub.replace('0x', '');
     tooltip.innerHTML =
-      `<b>ed25519</b><br>${pub}<br><br>` +
+      `<b>ed25519</b><br>${coloredPubHtml(pub)}<br><br>` +
       `<b>delay</b>&nbsp;&nbsp;${Math.round(hit.peer.delay_ms)} ms<br>` +
       `<b>addr</b>&nbsp;&nbsp;&nbsp;${hit.peer.addr}<br><br>` +
       `<span style="color:#0055cc;font-family:sans-serif">click to open chat</span>`;
@@ -336,7 +377,7 @@ canvas.addEventListener('click', e => {
   }
 });
 
-// ── Init ─────────────────────────────────────────────────────────────────────
+// -- Init ---------------------------------------------------------------------
 connectWS();
 fetchPeers();
 setInterval(fetchPeers, 5000);
