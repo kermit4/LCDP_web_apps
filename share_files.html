@@ -156,15 +156,16 @@ a { color: #1a6fa0; }
 
 <div class="explainer">
   <h2>How hash-based file sharing works</h2>
-  <p>When you upload a file, the node computes its <strong>SHA-256 hash</strong> and stores it at <code>cjp2p/public/&lt;sha256&gt;</code>. The URL you get looks like:</p>
-  <p style="text-align:center"><code>http://127.0.0.1:24255/&lt;sha256&gt;</code></p>
-  <p>Because the URL <em>is</em> the hash of the content, it has two useful properties:</p>
+  <p>When you upload a file, the node computes its <strong>blake3</strong> and <strong>SHA-256</strong> hashes. The primary URL uses blake3:</p>
+  <p style="text-align:center"><code>http://127.0.0.1:24255/b3/&lt;blake3&gt;</code></p>
+  <p>A SHA-256 URL is also available as a fallback. Because the URL <em>is</em> the hash of the content:</p>
   <ul>
-    <li><strong>Self-verifying:</strong> any node that serves you the file can be verified by hashing what you received and comparing it to the URL. If the bytes are wrong, the hash won't match &mdash; no trust required.</li>
-    <li><strong>Immutable:</strong> the same URL will always mean the same bytes, forever. Old links never break and never silently change.</li>
+    <li><strong>Self-verifying:</strong> any node serving the file can be checked by hashing what you received. If the bytes are wrong, the hash won't match -- no trust required.</li>
+    <li><strong>Immutable:</strong> the same URL always means the same bytes, forever.</li>
+    <li><strong>Block-verified (blake3):</strong> each 4KB block is checked against a Merkle tree during download, so corruption is caught per-block rather than only at the end.</li>
   </ul>
   <h2 style="margin-top:.6rem">P2P propagation</h2>
-  <p>When a node receives a request for a hash it doesn't have locally, it asks its peers. Any peer that has seen the file can respond. Once a node has the file, it serves it to future requesters &mdash; so the file <em>spreads through the network as demand exists</em>.</p>
+  <p>When a node receives a request for a hash it doesn't have locally, it asks its peers. Any peer that has seen the file can respond. Once a node has the file, it serves it to future requesters -- so the file <em>spreads through the network as demand exists</em>.</p>
   <ul>
     <li>You don't have to stay online. Once any peer has downloaded your file, that peer can serve it.</li>
     <li>Files are automatically replicated by every node that downloads them.</li>
@@ -177,7 +178,7 @@ a { color: #1a6fa0; }
   <p>drag files here, or</p>
   <label>pick files<input type="file" id="file-input" multiple></label>
   <p style="margin-top:.6rem;font-size:.75rem;color:#888">
-    files are hashed with SHA-256 and stored in <code>cjp2p/public/</code> &mdash; accessible by hash URL
+    files are hashed with blake3 and SHA-256 and stored in <code>cjp2p/public/</code>
   </p>
 </div>
 
@@ -242,18 +243,19 @@ function uploadFile(file) {
 
   xhr.addEventListener('load', () => {
     if (xhr.status === 200) {
-      let sha256 = '';
-      try { sha256 = JSON.parse(xhr.responseText).sha256; } catch(e) {}
+      let sha256 = '', blake3 = '';
+      try { const r = JSON.parse(xhr.responseText); sha256 = r.sha256 || ''; blake3 = r.blake3 || ''; } catch(e) {}
       fill.style.width = '100%';
       fill.style.background = '#2a8a2a';
       status.textContent = 'done';
       row.classList.add('status-done');
       const linkDiv = document.createElement('div');
       linkDiv.className = 'file-link';
-      const url = `${BASE}/${sha256}`;
-      linkDiv.innerHTML = `<a href="${url}" target="_blank">${url}</a>`;
+      const b3url = blake3 ? `${BASE}/b3/${blake3}` : `${BASE}/${sha256}`;
+      const shaNote = (blake3 && sha256) ? ` <span style="color:#666;font-size:0.85em">(sha256: <a href="${BASE}/${sha256}" target="_blank">${sha256.slice(0,12)}...</a>)</span>` : '';
+      linkDiv.innerHTML = `<a href="${b3url}" target="_blank">${b3url}</a>${shaNote}`;
       row.appendChild(linkDiv);
-      addHistory(file.name, sha256);
+      addHistory(file.name, blake3, sha256);
       refreshStatus();
     } else {
       status.textContent = `error ${xhr.status}: ${xhr.responseText}`;
@@ -290,13 +292,14 @@ dz.addEventListener('drop', e => {
   handleFiles(e.dataTransfer.files);
 });
 
-function addHistory(name, sha256) {
-  history.push({name, sha256});
+function addHistory(name, blake3, sha256) {
+  history.push({name, blake3, sha256});
   const hist = document.getElementById('history');
   const entry = document.createElement('div');
   entry.className = 'history-entry';
-  const url = `${BASE}/${sha256}`;
-  entry.innerHTML = `<span class="h-name">${name}</span><a class="h-hash" href="${url}" target="_blank">${sha256}</a>`;
+  const url = blake3 ? `${BASE}/b3/${blake3}` : `${BASE}/${sha256}`;
+  const id = blake3 || sha256;
+  entry.innerHTML = `<span class="h-name">${name}</span><a class="h-hash" href="${url}" target="_blank">${id}</a>`;
   hist.appendChild(entry);
 }
 </script>
