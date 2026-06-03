@@ -154,6 +154,17 @@ a { color: #1a6fa0; }
   </div>
 </div>
 
+<div id="drop-zone">
+  <p>drag files here, or</p>
+  <label>pick files<input type="file" id="file-input" multiple></label>
+  <p style="margin-top:.6rem;font-size:.75rem;color:#888">
+    files are hashed with blake3 and SHA-256 and stored in <code>cjp2p/public/</code>
+  </p>
+</div>
+
+<div id="queue"></div>
+<div id="history"><h2>uploaded this session</h2></div>
+
 <div class="explainer">
   <h2>How hash-based file sharing works</h2>
   <p>When you upload a file, the node computes its <strong>blake3</strong> and <strong>SHA-256</strong> hashes. The primary URL uses blake3:</p>
@@ -171,19 +182,8 @@ a { color: #1a6fa0; }
     <li>Files are automatically replicated by every node that downloads them.</li>
     <li>There is no central server. Any node that has the bytes is a server.</li>
   </ul>
-  <p>For <strong>updatable named URLs</strong> (same link, new content), see <a href="/publish.html">Publish</a>.</p>
+  <p>For <strong>updatable named URLs</strong> (same link, new content), see <a href="publish.html">Publish</a>.</p>
 </div>
-
-<div id="drop-zone">
-  <p>drag files here, or</p>
-  <label>pick files<input type="file" id="file-input" multiple></label>
-  <p style="margin-top:.6rem;font-size:.75rem;color:#888">
-    files are hashed with blake3 and SHA-256 and stored in <code>cjp2p/public/</code>
-  </p>
-</div>
-
-<div id="queue"></div>
-<div id="history"><h2>uploaded this session</h2></div>
 
 <script>
 const PORT = location.port || 24255;

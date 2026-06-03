@@ -198,40 +198,6 @@ a { color: #1a6fa0; }
   </div>
 </div>
 
-<div class="explainer">
-  <h2>What "publish" does</h2>
-  <p>Publishing gives a file a <strong>persistent, updatable URL</strong> tied to your node's identity. The URL looks like:</p>
-  <p style="text-align:center"><code>http://127.0.0.1:24255/latest/&lt;your-pubkey&gt;/&lt;publish-path&gt;</code></p>
-  <p>The <strong>publish name</strong> is the path the file is served under &mdash; it doesn't have to match the source filename. You might drop <code>myapp-v2.3.tar.gz</code> but publish it as <code>myapp/latest.tar.gz</code>, so that URL stays stable across releases. Subdirectory paths (e.g. <code>tools/index.html</code>) are allowed.</p>
-  <p>That URL <em>always resolves to your current version</em> of that name. Republish with the same name to update it. Your public key is part of the URL, so no one else can overwrite it.</p>
-
-  <h2 style="margin-top:.7rem">How it works internally</h2>
-  <ul>
-    <li>The file is written to <code>cjp2p/origin/&lt;publish-name&gt;</code> on your node.</li>
-    <li>When anyone requests the <code>/latest/</code> URL, your node hashes the current file and signs a <strong>Latest message</strong> binding <code>(your-pubkey, publish-name)</code> to that SHA-256, with a sequence number equal to the file's modification time.</li>
-    <li>That signed message propagates to peers. Any peer that has seen it can answer future requests &mdash; even if your node is temporarily offline &mdash; by pointing the requester at the right hash. The actual bytes are served from <code>cjp2p/public/&lt;sha256&gt;</code> and spread peer-to-peer from there.</li>
-    <li>When you republish, the new Latest message has a higher sequence number. Peers prefer the highest they have seen, so the URL automatically tracks the new content.</li>
-  </ul>
-
-  <h2 style="margin-top:.7rem">Publish vs. Upload</h2>
-  <div class="vs">
-    <div class="vs-box">
-      <strong>Publish (this page)</strong>
-      URL: <code>/latest/&lt;key&gt;/&lt;name&gt;</code><br>
-      Mutable &mdash; republish to update<br>
-      Tied to your identity<br>
-      You control the public name
-    </div>
-    <div class="vs-box">
-      <strong><a href="share_files.html">Upload</a></strong>
-      URL: <code>/&lt;sha256&gt;</code><br>
-      Immutable &mdash; content is the address<br>
-      Anonymous<br>
-      Any peer holding the bytes can serve it
-    </div>
-  </div>
-</div>
-
 <div id="drop-zone">
   <p>drop files here to stage them, or</p>
   <label>pick files<input type="file" id="file-input" multiple></label>
@@ -242,6 +208,40 @@ a { color: #1a6fa0; }
 
 <div id="queue"></div>
 <div id="history"><h2>published this session</h2></div>
+
+<div class="explainer">
+  <h2>What "publish" does</h2>
+  <p>Publishing gives a file a <strong>persistent, updatable URL</strong> tied to your node's identity. The URL looks like:</p>
+  <p style="text-align:center"><code>http://127.0.0.1:24255/latest/&lt;your-pubkey&gt;/&lt;publish-path&gt;</code></p>
+  <p>The <strong>publish name</strong> is the path the file is served under -- it doesn't have to match the source filename. You might drop <code>myapp-v2.3.tar.gz</code> but publish it as <code>myapp/latest.tar.gz</code>, so that URL stays stable across releases. Subdirectory paths (e.g. <code>tools/index.html</code>) are allowed.</p>
+  <p>That URL <em>always resolves to your current version</em> of that name. Republish with the same name to update it. Your public key is part of the URL, so no one else can overwrite it.</p>
+
+  <h2 style="margin-top:.7rem">How it works internally</h2>
+  <ul>
+    <li>The file is written to <code>cjp2p/origin/&lt;publish-name&gt;</code> on your node.</li>
+    <li>When anyone requests the <code>/latest/</code> URL, your node hashes the current file and signs a <strong>Latest message</strong> binding <code>(your-pubkey, publish-name)</code> to that SHA-256, with a sequence number equal to the file's modification time.</li>
+    <li>That signed message propagates to peers. Any peer that has seen it can answer future requests -- even if your node is temporarily offline -- by pointing the requester at the right hash. The actual bytes are served from <code>cjp2p/public/&lt;sha256&gt;</code> and spread peer-to-peer from there.</li>
+    <li>When you republish, the new Latest message has a higher sequence number. Peers prefer the highest they have seen, so the URL automatically tracks the new content.</li>
+  </ul>
+
+  <h2 style="margin-top:.7rem">Publish vs. Upload</h2>
+  <div class="vs">
+    <div class="vs-box">
+      <strong>Publish (this page)</strong>
+      URL: <code>/latest/&lt;key&gt;/&lt;name&gt;</code><br>
+      Mutable -- republish to update<br>
+      Tied to your identity<br>
+      You control the public name
+    </div>
+    <div class="vs-box">
+      <strong><a href="share_files.html">Upload</a></strong>
+      URL: <code>/b3/&lt;blake3&gt;</code> or <code>/&lt;sha256&gt;</code><br>
+      Immutable -- content is the address<br>
+      Anonymous<br>
+      Any peer holding the bytes can serve it
+    </div>
+  </div>
+</div>
 
 <script>
 const PORT = location.port || 24255;
