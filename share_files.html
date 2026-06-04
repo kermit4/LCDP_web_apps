@@ -158,7 +158,7 @@ a { color: #1a6fa0; }
   <p>drag files here, or</p>
   <label>pick files<input type="file" id="file-input" multiple></label>
   <p style="margin-top:.6rem;font-size:.75rem;color:#888">
-    files are hashed with blake3 and SHA-256 and stored in <code>cjp2p/public/</code>
+    files are hashed with blake3 and SHA-256 and stored in <code>cjp2p/public/blake3/</code>
   </p>
 </div>
 
@@ -168,7 +168,7 @@ a { color: #1a6fa0; }
 <div class="explainer">
   <h2>How hash-based file sharing works</h2>
   <p>When you upload a file, the node computes its <strong>blake3</strong> and <strong>SHA-256</strong> hashes. The primary URL uses blake3:</p>
-  <p style="text-align:center"><code>http://127.0.0.1:24255/b3/&lt;blake3&gt;</code></p>
+  <p style="text-align:center"><code>http://127.0.0.1:24255/blake3/&lt;blake3&gt;</code></p>
   <p>A SHA-256 URL is also available as a fallback. Because the URL <em>is</em> the hash of the content:</p>
   <ul>
     <li><strong>Self-verifying:</strong> any node serving the file can be checked by hashing what you received. If the bytes are wrong, the hash won't match -- no trust required.</li>
@@ -251,7 +251,7 @@ function uploadFile(file) {
       row.classList.add('status-done');
       const linkDiv = document.createElement('div');
       linkDiv.className = 'file-link';
-      const b3url = blake3 ? `${BASE}/b3/${blake3}` : `${BASE}/${sha256}`;
+      const b3url = blake3 ? `${BASE}/blake3/${blake3}` : `${BASE}/${sha256}`;
       const shaNote = (blake3 && sha256) ? ` <span style="color:#666;font-size:0.85em">(sha256: <a href="${BASE}/${sha256}" target="_blank">${sha256.slice(0,12)}...</a>)</span>` : '';
       linkDiv.innerHTML = `<a href="${b3url}" target="_blank">${b3url}</a>${shaNote}`;
       row.appendChild(linkDiv);
@@ -297,7 +297,7 @@ function addHistory(name, blake3, sha256) {
   const hist = document.getElementById('history');
   const entry = document.createElement('div');
   entry.className = 'history-entry';
-  const url = blake3 ? `${BASE}/b3/${blake3}` : `${BASE}/${sha256}`;
+  const url = blake3 ? `${BASE}/blake3/${blake3}` : `${BASE}/${sha256}`;
   const id = blake3 || sha256;
   entry.innerHTML = `<span class="h-name">${name}</span><a class="h-hash" href="${url}" target="_blank">${id}</a>`;
   hist.appendChild(entry);
