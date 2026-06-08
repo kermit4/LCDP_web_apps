@@ -415,7 +415,7 @@ function stop_play() {
   clearInterval(sched_timer); sched_timer = null;
   ui_step = -1; ui_last = -2;
   document.querySelectorAll('[data-seq-step]').forEach(el => el.classList.remove('playhead'));
-  document.getElementById('play_btn').textContent = '&#9654; Play';
+  document.getElementById('play_btn').textContent = "\u25B6 Play";
   document.getElementById('play_btn').className = 'ctrl';
 }
 
