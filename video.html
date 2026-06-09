@@ -27,6 +27,28 @@ video, canvas { display:block; background:#000; }
        padding:6px 9px; border-radius:5px; width:230px; bottom:calc(100% + 4px); left:0;
        white-space:normal; box-shadow:0 2px 8px rgba(0,0,0,.5); pointer-events:none; }
 .tip-wrap:hover .tip, .tip-wrap.tip-open .tip { display:block; }
+.explainer {
+  background: #f8f8f8;
+  border: 1px solid #ddd;
+  border-left: 3px solid #1a6fa0;
+  border-radius: 4px;
+  padding: .9rem 1.1rem;
+  margin: 1rem 0;
+  font-size: .82rem;
+  line-height: 1.6;
+  color: #444;
+}
+.explainer h2 { font-size: .9rem; color: #1a6fa0; margin-bottom: .4rem; }
+.explainer p { margin-bottom: .5rem; }
+.explainer p:last-child { margin-bottom: 0; }
+.explainer code {
+  background: #e8e8e8;
+  padding: .1em .35em;
+  border-radius: 2px;
+  font-size: .92em;
+}
+.explainer ul { margin: .3rem 0 .4rem 1.4rem; }
+.explainer li { margin-bottom: .25rem; }
 </style>
 </head>
 <body>
@@ -39,7 +61,8 @@ video, canvas { display:block; background:#000; }
 their ed25519: <input id=their_ed25519 size=80>
 <br>share: <a id=link href=""></a>
 <br>ws url: <input id=ws_url size=50>
-<br><a href=/>status page</a>    VIDEO MAY FAIL ON SOME CONNECTIONS that dont handle fragmented packets well, as the keyframes can be large.
+<br><a href=/>return to status page</a>
+<p>if video is not getting through, try lowering <b>Video quality</b> below.
 <div id=cameraRow style="font-size:12px;margin:3px 0;" hidden>
   camera: <select id=cameraSelect></select>
   <span id=zoomWrap hidden> &nbsp;zoom: <input type=range id=zoomSlider style="width:100px;vertical-align:middle"></span>
@@ -70,6 +93,15 @@ their ed25519: <input id=their_ed25519 size=80>
   <button id=diagBtn>Diag: Off</button>
 </div>
 <div style="display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;">
+  <label for=qualitySelect>Video quality:</label>
+  <select id=qualitySelect style="font-size:12px;">
+    <option value=0>High (640p, 200kbps)</option>
+    <option value=1>Med (320p, 100kbps)</option>
+    <option value=2>Low (160p, 50kbps)</option>
+  </select>
+  <span style="color:#888;">-- lower if video is not getting through</span>
+</div>
+<div style="display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;">
   <label for=maxBufSlider>Max buf:</label>
   <input type=range id=maxBufSlider min=50 max=650 step=25 value=500 style="width:160px">
   <span id=maxBufVal>500ms</span>
@@ -91,6 +123,13 @@ const logDiv        = document.getElementById('logDiv');
 const ws_url_input  = document.getElementById('ws_url');
 ws_url_input.value  = 'ws://localhost:24255/wt';
 ws_url_input.onchange = () => { if (socket) socket.close(); };
+
+const QUALITY_CONFIGS = [
+    { maxDim: 640, bitrate: 200_000 },
+    { maxDim: 320, bitrate: 100_000 },
+    { maxDim: 160, bitrate:  50_000 },
+];
+let qualityIdx = 0;
 
 // -- VU meter (12 fixed-width segments, never reflows) ------------------------
 const VU_N = 12;
@@ -282,7 +321,7 @@ async function switchCamera(deviceId) {
     let newStream;
     try {
         newStream = await navigator.mediaDevices.getUserMedia({
-            video: { deviceId: { exact: deviceId }, width:{max:640}, height:{max:640}, frameRate:{ideal:24,max:30} }
+            video: { deviceId: { exact: deviceId }, width:{max:QUALITY_CONFIGS[qualityIdx].maxDim}, height:{max:QUALITY_CONFIGS[qualityIdx].maxDim}, frameRate:{ideal:24,max:30} }
         });
     } catch(e) { log_always('switchCamera failed:', e.message || e); return; }
     const vt = newStream.getVideoTracks()[0];
@@ -298,7 +337,7 @@ async function switchCamera(deviceId) {
     checkZoom(vt);
     if (encoder) {
         try { await encoder.flush(); } catch {}
-        encoder.configure({ codec:'vp8', width:encW, height:encH, bitrate:200_000, framerate:FPS });
+        encoder.configure({ codec:'vp8', width:encW, height:encH, bitrate:QUALITY_CONFIGS[qualityIdx].bitrate, framerate:FPS });
         sendW = encW; sendH = encH; frameCount = 0;
     }
     if (encoder) {
@@ -316,7 +355,7 @@ async function switchCamera(deviceId) {
                 if (frame.codedWidth !== encW || frame.codedHeight !== encH) {
                     log_always('rotation:', frame.codedWidth, 'x', frame.codedHeight);
                     try { await encoder.flush(); } catch {}
-                    encoder.configure({ codec:'vp8', width:frame.codedWidth, height:frame.codedHeight, bitrate:200_000, framerate:FPS });
+                    encoder.configure({ codec:'vp8', width:frame.codedWidth, height:frame.codedHeight, bitrate:QUALITY_CONFIGS[qualityIdx].bitrate, framerate:FPS });
                     encW = frame.codedWidth; encH = frame.codedHeight; sendW = encW; sendH = encH; frameCount = 0;
                     fitEl(localVideo, encW, encH);
                 }
@@ -333,6 +372,12 @@ async function switchCamera(deviceId) {
 cameraSelect.onchange = () => {
     selectedCameraId = cameraSelect.value;
     switchCamera(selectedCameraId);
+};
+
+const qualitySelect = document.getElementById('qualitySelect');
+qualitySelect.onchange = () => {
+    qualityIdx = parseInt(qualitySelect.value, 10);
+    if (camStream) switchCamera(selectedCameraId);
 };
 
 // -- state --------------------------------------------------------------------
@@ -484,7 +529,7 @@ document.addEventListener('click', () => ensureAudioCtx().catch(() => {}), { onc
 async function startCameraAndMic() {
     await ensureAudioCtx();
     if (!camStream) {
-        const vidConstraint = { width:{max:640}, height:{max:640}, frameRate:{ideal:24,max:30} };
+        const vidConstraint = { width:{max:QUALITY_CONFIGS[qualityIdx].maxDim}, height:{max:QUALITY_CONFIGS[qualityIdx].maxDim}, frameRate:{ideal:24,max:30} };
         if (selectedCameraId) vidConstraint.deviceId = { exact: selectedCameraId };
         try {
             camStream = await navigator.mediaDevices.getUserMedia({
@@ -511,7 +556,7 @@ async function startCameraAndMic() {
         fitEl(localVideo, encW, encH);
 
         function configureEncoder(w, h) {
-            encoder.configure({ codec:'vp8', width:w, height:h, bitrate:200_000, framerate:FPS });
+            encoder.configure({ codec:'vp8', width:w, height:h, bitrate:QUALITY_CONFIGS[qualityIdx].bitrate, framerate:FPS });
             encW = w; encH = h; sendW = w; sendH = h; frameCount = 0;
         }
 
@@ -988,4 +1033,30 @@ document.addEventListener('click', e => {
 
 connect();
 </script>
+
+<div class="explainer">
+  <h2>CJP2P Video Chat</h2>
+  <p>Encrypted peer-to-peer video and audio forwarded through the CJP2P relay. Video is encoded as <strong>VP8</strong> and audio as <strong>Opus 32kbps mono</strong>. The relay only forwards opaque blobs keyed by Ed25519 public key -- no server sees your media.</p>
+
+  <h2 style="margin-top:.6rem">Connecting</h2>
+  <p>Fill in <strong>their ed25519</strong> with the other person's public key (they get theirs from the <a href=/>status page</a>). The page generates a shareable link -- when they open it their key is pre-filled on your side.</p>
+  <p>Click <strong>Unmute Mic</strong> to start the camera and microphone. Click <strong>Unmute Video</strong> to begin sending video. The camera and mic only activate on that first click.</p>
+
+  <h2 style="margin-top:.6rem">Controls</h2>
+  <ul>
+    <li><strong>Echo / Noise / Gain</strong> -- browser audio processing toggles. Mic restarts when changed.</li>
+    <li><strong>Diag</strong> -- overlays a real-time round-trip latency chart on the remote video (blue = video RTT, amber = audio RTT).</li>
+    <li><strong>Max buf</strong> -- adaptive jitter buffer ceiling. Raise it if audio is choppy on a high-latency link.</li>
+    <li><strong>Video quality</strong> -- lowers capture resolution and encoder bitrate, which helps on slow routes or routes that don't handle IP fragmentation well.</li>
+  </ul>
+
+  <h2 style="margin-top:.6rem">Troubleshooting</h2>
+  <ul>
+    <li><strong>Video not arriving:</strong> try a lower Video quality setting. VP8 keyframes at high resolution can exceed the MTU and get dropped by routes that don't handle IP fragmentation well.</li>
+    <li><strong>Audio choppy:</strong> raise the Max buf slider.</li>
+    <li><strong>Echo from the far end:</strong> ask them to enable Echo: On.</li>
+    <li><strong>No connection at all:</strong> confirm the ed25519 key is correct and the peer is online (check the <a href=/>status page</a>).</li>
+  </ul>
+</div>
+
 </body></html>
