@@ -267,7 +267,13 @@ document.getElementById('fsRemote').onclick = () => goFullscreen(remoteCanvas);
 // -- fit element to wxh, longest side = 320px --------------------------------
 const MAX_DIM = 320;
 function fitEl(el, w, h) {
-    const scale = Math.min(MAX_DIM / w, MAX_DIM / h, 1);
+    const scale = Math.min(MAX_DIM / w, MAX_DIM / h);
+    el.style.width  = Math.round(w * scale) + 'px';
+    el.style.height = Math.round(h * scale) + 'px';
+}
+// remote canvas always scales up to MAX_DIM (no 1x cap)
+function fitRemote(el, w, h) {
+    const scale = Math.min(MAX_DIM / w, MAX_DIM / h);
     el.style.width  = Math.round(w * scale) + 'px';
     el.style.height = Math.round(h * scale) + 'px';
 }
@@ -414,6 +420,7 @@ const videoQueue = [];
 const videoPending = new Map(); // seq -> {vf, arrivedAt} -- pre-decode reorder buffer
 const audioPending = new Map(); // offset -> {af, arrivedAt} -- pre-decode reorder buffer
 let sendW = 0, sendH = 0;
+let remoteEncW = 0, remoteEncH = 0; // last sender-reported w/h; separate from canvas dims
 let lastVideoFrame = null;
 
 // latency chart
@@ -477,7 +484,7 @@ function makeDecoder(w, h) {
             if (remoteCanvas.width !== frame.displayWidth || remoteCanvas.height !== frame.displayHeight) {
                 remoteCanvas.width  = frame.displayWidth;
                 remoteCanvas.height = frame.displayHeight;
-                fitEl(remoteCanvas, frame.displayWidth, frame.displayHeight);
+                fitRemote(remoteCanvas, frame.displayWidth, frame.displayHeight);
             }
             createImageBitmap(frame).then(bm => {
                 videoQueue.push({ bm, due: Date.now() + videoDelayMs() });
@@ -744,12 +751,10 @@ document.getElementById('gainBtn').onclick = async () => {
 
 // -- video reorder buffer helpers ---------------------------------------------
 function decodeVideoFrame(vf) {
-    if (vf.w && vf.h && (vf.w !== remoteCanvas.width || vf.h !== remoteCanvas.height)) {
+    if (vf.w && vf.h && (vf.w !== remoteEncW || vf.h !== remoteEncH)) {
         if (videoDecoder && videoDecoder.state !== 'closed') { try { videoDecoder.close(); } catch {} }
         videoDecoder = makeDecoder(vf.w, vf.h);
-        remoteCanvas.width  = vf.w;
-        remoteCanvas.height = vf.h;
-        fitEl(remoteCanvas, vf.w, vf.h);
+        remoteEncW = vf.w; remoteEncH = vf.h;
         if (!vf.keyframe) return;
     }
     if (!videoDecoder || videoDecoder.state === 'closed') videoDecoder = makeDecoder(vf.w, vf.h);
