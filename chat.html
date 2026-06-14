@@ -192,6 +192,30 @@ debuging :
     let my_ed25519_to_sign = null;
     let my_ed25519 = null;
 
+    let backoff_delay = 500;
+    let backoff_timer = null;
+    let last_sent_text = null;
+
+    function send_to_peer() {
+        if (!socket || socket.readyState !== WebSocket.OPEN) return;
+        if (!last_sent_text || !their_ed25519.value) return;
+        socket.send(JSON.stringify([{Forward:{to_ed25519:their_ed25519.value,messages:[{ChatMessage:{message:last_sent_text}}]}}]));
+    }
+
+    function schedule_backoff() {
+        clearTimeout(backoff_timer);
+        backoff_delay = 500;
+        tick_backoff();
+    }
+
+    function tick_backoff() {
+        backoff_timer = setTimeout(() => {
+            send_to_peer();
+            backoff_delay *= 1.5;
+            tick_backoff();
+        }, backoff_delay);
+    }
+
     let single_window=false;
     document.getElementById('single-btn').addEventListener('click', async () => {
         if (!single_window) {
@@ -259,6 +283,7 @@ debuging :
             setTimeout(connect, 200);
         };
 		socket.onopen = () => {
+            schedule_backoff();
 			let work = Promise.resolve();
 			socket.onmessage = async(event) => { 
 				work = work.then(async () => {
@@ -396,7 +421,9 @@ debuging :
                 log_always("len " + lines[0].length);
         }
         txt = lines.join('\n');
+        last_sent_text = txt;
         socket.send(JSON.stringify([{Forward:{to_ed25519:their_ed25519.value,messages:[{ChatMessage:{message:txt}}]}}]  ));
+        schedule_backoff();
         sha256hex(txt).then(h => {
             lastSentHash = h;
             sawStatus.style.color = '#888';
