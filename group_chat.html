@@ -16,6 +16,7 @@ body { font-family: monospace; background: #fff; color: #111; display: flex; fle
 .msg-meta a { color: inherit; text-decoration: none; }
 .msg-meta a:hover { text-decoration: underline; }
 .msg-text { margin-left: 2px; white-space: pre-wrap; }
+.msg-action { margin-left: 2px; font-style: italic; white-space: pre-wrap; }
 #inputbar { display: flex; padding: 6px 6px calc(6px + env(safe-area-inset-bottom, 0px)); gap: 6px; background: #ddd; flex-shrink: 0; border-top: 1px solid #bbb; }
 #msg_input { flex: 1; font-family: monospace; font-size: 14px; padding: 6px 8px; border: 1px solid #aaa; border-radius: 3px; resize: none; height: 40px; }
 #send_btn { padding: 6px 16px; background: #3a7bd5; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 14px; flex-shrink: 0; }
@@ -346,7 +347,14 @@ function render_messages() {
         meta.appendChild(key_link);
 
         row.appendChild(meta);
-        render_message_text(row, m.text);
+        if (m.action) {
+            const as_ = document.createElement('span');
+            as_.className = 'msg-action';
+            append_text_with_links(as_, ' ' + m.action);
+            row.appendChild(as_);
+        } else {
+            render_message_text(row, m.text);
+        }
         container.appendChild(row);
     }
     if (at_bottom) container.scrollTop = container.scrollHeight;
@@ -362,11 +370,11 @@ function send_to_peer(peer_pub) {
     if (msgs.length === 0) return;
     socket.send(JSON.stringify([{Forward:{
         to_ed25519: peer_pub,
-        messages: msgs.map(m => ({GroupChatMessage:{
-            group_name: m.group_name,
-            text: m.text,
-            timestamp: m.timestamp
-        }}))
+        messages: msgs.map(m => {
+            const gcm = { group_name: m.group_name, text: m.text, timestamp: m.timestamp };
+            if (m.action) gcm.action = m.action;
+            return {GroupChatMessage: gcm};
+        })
     }}]));
 }
 
@@ -566,12 +574,14 @@ function connect() {
                     if (forwarded && 'GroupChatMessage' in msg) {
                         const gcm = msg.GroupChatMessage;
                         if (gcm.group_name === GROUP_NAME) {
-                            chat_batch.push({
+                            const entry = {
                                 pub_key: src,
                                 text: gcm.text,
                                 timestamp: gcm.timestamp,
                                 group_name: gcm.group_name
-                            });
+                            };
+                            if (gcm.action) entry.action = gcm.action;
+                            chat_batch.push(entry);
                         }
                     }
                 }
@@ -590,11 +600,26 @@ function on_identity_known() {
     render_messages();
 }
 
+const IRC_SHORTHANDS = {
+    wave:'waves', shrug:'shrugs', nod:'nods', laugh:'laughs',
+    facepalm:'facepalms', cry:'cries', bow:'bows', hug:'hugs',
+    dance:'dances', clap:'claps', cheer:'cheers', sigh:'sighs',
+};
+
 function send_message() {
     const input = document.getElementById('msg_input');
-    const text = input.value.trim();
-    if (!text) return;
+    const raw = input.value.trim();
+    if (!raw) return;
+    let text = raw, action = null;
+    if (raw.startsWith('/me ') && raw.length > 4) {
+        action = raw.slice(4);
+        text = '';
+    } else if (/^\/\w+$/.test(raw)) {
+        const cmd = raw.slice(1).toLowerCase();
+        if (IRC_SHORTHANDS[cmd]) { action = IRC_SHORTHANDS[cmd]; text = ''; }
+    }
     const m = { pub_key: my_ed25519, text, timestamp: Date.now(), group_name: GROUP_NAME };
+    if (action) m.action = action;
     add_messages([m]);
     input.value = '';
     send_to_all_peers();

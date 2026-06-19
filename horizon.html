@@ -194,13 +194,34 @@ function pubToX(pub) {
   return MARGIN_X + (n % usable);
 }
 
-// blue-green for near, slate for far
-function delayToColor(ms) {
-  const t = Math.min(ms, MAX_DELAY) / MAX_DELAY;
-  const r = Math.round(20  + t * 110);
-  const g = Math.round(110 - t * 60);
-  const b = Math.round(200 - t * 70);
-  return { r, g, b, css: `rgb(${r},${g},${b})` };
+// Draw sphere with pub-key-derived vertical stripes + 3-D shine
+function drawSphere(ctx, x, y, r, pub) {
+  const hex = pub.replace('0x', '');
+  const n  = 5;
+  const sw = (r * 2) / n;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.clip();
+
+  for (let i = 0; i < n; i++) {
+    const nibble = parseInt(hex[i] || '0', 16);
+    ctx.fillStyle   = NIBBLE_COLORS[nibble & 7];
+    ctx.globalAlpha = (nibble & 8) ? 1.0 : 0.55;
+    ctx.fillRect(x - r + i * sw, y - r, sw, r * 2);
+  }
+  ctx.globalAlpha = 1.0;
+
+  // 3-D highlight overlay
+  const ng = ctx.createRadialGradient(x - r*0.35, y - r*0.35, r*0.05, x, y, r);
+  ng.addColorStop(0,    'rgba(255,255,255,0.75)');
+  ng.addColorStop(0.38, 'rgba(255,255,255,0.10)');
+  ng.addColorStop(1,    'rgba(0,0,0,0.32)');
+  ctx.fillStyle = ng;
+  ctx.fillRect(x - r, y - r, r * 2, r * 2);
+
+  ctx.restore();
 }
 
 // -- Drawing ------------------------------------------------------------------
@@ -273,7 +294,8 @@ function draw() {
     const x   = pubToX(peer.pub);
     const y   = delayToY(peer.delay_ms);
     const r   = delayToRadius(peer.delay_ms);
-    const col = delayToColor(peer.delay_ms);
+    const hex = peer.pub.replace('0x', '');
+    const glowColor = NIBBLE_COLORS[parseInt(hex[0] || '0', 16) & 7];
 
     // ground shadow (projected ellipse)
     const shadowY = H - 22;
@@ -285,34 +307,41 @@ function draw() {
     ctx.ellipse(x, shadowY, r * 1.6, r * 0.5, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // glow
-    ctx.shadowColor = col.css;
+    // glow + striped sphere
+    ctx.shadowColor = glowColor;
     ctx.shadowBlur  = r;
-
-    // node sphere (radial gradient for 3-D feel)
-    const ng = ctx.createRadialGradient(x - r*0.35, y - r*0.35, r*0.05, x, y, r);
-    ng.addColorStop(0, '#ffffff');
-    ng.addColorStop(0.35, col.css);
-    ng.addColorStop(1, `rgba(${col.r},${col.g},${col.b},0.6)`);
-    ctx.fillStyle = ng;
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.shadowBlur = 0;
+    drawSphere(ctx, x, y, r, peer.pub);
+    ctx.shadowBlur  = 0;
 
     // ring
-    ctx.strokeStyle = `rgba(${col.r - 20},${col.g - 20},${col.b - 20},0.4)`;
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(30,30,30,0.3)';
+    ctx.lineWidth   = 1;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.stroke();
 
-    // label (only for larger nodes)
+    // labels — flip above sphere when they'd overflow the canvas bottom
     if (r >= 10) {
       const fs = Math.max(8, Math.round(r * 0.52));
-      drawColoredPubLabel(ctx, peer.pub, x, y + r + fs + 2, fs);
-      if (r >= 14) {
-        ctx.fillStyle = '#555';
-        ctx.font = `${Math.max(8, fs - 2)}px sans-serif`;
-        ctx.fillText(`${Math.round(peer.delay_ms)} ms`, x, y + r + fs * 2 + 2);
+      const wouldOverflow = y + r + fs * 2 + 6 > H;
+
+      if (wouldOverflow) {
+        // draw above sphere: pub first (higher), then delay closer to it
+        drawColoredPubLabel(ctx, peer.pub, x, y - r - (r >= 14 ? fs + 6 : 4), fs);
+        if (r >= 14) {
+          ctx.fillStyle = '#555';
+          ctx.font      = `${Math.max(8, fs - 2)}px sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.fillText(`${Math.round(peer.delay_ms)} ms`, x, y - r - 4);
+        }
+      } else {
+        drawColoredPubLabel(ctx, peer.pub, x, y + r + fs + 2, fs);
+        if (r >= 14) {
+          ctx.fillStyle = '#555';
+          ctx.font      = `${Math.max(8, fs - 2)}px sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.fillText(`${Math.round(peer.delay_ms)} ms`, x, y + r + fs * 2 + 2);
+        }
       }
     }
 

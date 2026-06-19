@@ -67,11 +67,19 @@ body {
 #avatar-compose { width: 48px; height: 48px; font-size: 20px; background: #e1e8ed; color: #aab8c2; }
 #compose-right { flex: 1; }
 #reply-indicator {
-  display: none; font-size: 13px; color: #1da1f2; margin-bottom: 6px;
+  display: none; font-size: 13px; color: #1da1f2; margin-bottom: 4px;
 }
 #reply-indicator button {
   background: none; border: none; cursor: pointer; color: #aab8c2;
   font-size: 12px; margin-left: 6px; padding: 0;
+}
+#reply-preview {
+  display: none;
+  font-size: 13px; color: #657786;
+  border-left: 3px solid #cfe8fb;
+  padding: 3px 8px; margin-bottom: 8px;
+  white-space: pre-wrap; word-break: break-word;
+  overflow: hidden; max-height: 3.6em;
 }
 #chirp-input {
   width: 100%; font-family: inherit; font-size: 18px;
@@ -100,6 +108,8 @@ body {
   padding: 12px 16px; display: flex; gap: 12px;
 }
 .chirp-card:last-child { border-bottom: none; }
+@keyframes flash-bg { 0% { background: #d6eefa; } 100% { background: #fff; } }
+.chirp-card.flash { animation: flash-bg 1.4s ease-out; }
 .chirp-avatar {
   width: 48px; height: 48px; font-size: 18px;
   cursor: pointer; flex-shrink: 0;
@@ -186,6 +196,7 @@ body {
           &#8617; Replying to <b id="reply-to-label">&hellip;</b>
           <button onclick="cancelReply()" title="Cancel reply">&#x2715;</button>
         </div>
+        <div id="reply-preview"></div>
         <textarea id="chirp-input" placeholder="What&#39;s chirping?" maxlength="280" disabled></textarea>
         <div id="compose-footer">
           <span id="char-count">280</span>
@@ -206,7 +217,6 @@ body {
 </div>
 
 <script>
-const GROUP = 'chirp';
 const LS_KEY = 'chirp_v1';
 const MAX_STORED = 500;
 
@@ -253,6 +263,26 @@ const COLORS = ['#1da1f2','#17bf63','#e0245e','#7b68ee','#f5630a',
 function pub_color(pub) { return COLORS[parseInt(pub.slice(0,3),16) % COLORS.length]; }
 function pub_letter(pub) { return pub[0].toUpperCase(); }
 function short(pub) { return pub.slice(0,8); }
+
+const NIBBLE_COLORS = ['#111','#c0392b','#27ae60','#b7950b','#2471a3','#7d3c98','#148f77','#888'];
+function colored_pub_prefix(pub, suffix_text, suffix_color) {
+  const wrap = document.createElement('span');
+  for (let i = 0; i < 5 && i < pub.length; i++) {
+    const nibble = parseInt(pub[i], 16);
+    const s = document.createElement('span');
+    if (nibble & 8) { s.style.backgroundColor = NIBBLE_COLORS[nibble & 7]; s.style.color = '#fff'; }
+    else            { s.style.color = NIBBLE_COLORS[nibble & 7]; }
+    s.textContent = pub[i];
+    wrap.appendChild(s);
+  }
+  if (suffix_text) {
+    const rest = document.createElement('span');
+    if (suffix_color) rest.style.color = suffix_color;
+    rest.textContent = suffix_text;
+    wrap.appendChild(rest);
+  }
+  return wrap;
+}
 
 function make_avatar(pub, big) {
   const d = document.createElement('div');
@@ -316,6 +346,7 @@ function render() {
 function make_card(c, by_key) {
   const card = document.createElement('div');
   card.className = 'chirp-card';
+  card.dataset.key = chirp_key(c);
 
   const av = make_avatar(c.pub, true);
   av.onclick = () => setFilter(c.pub);
@@ -330,7 +361,8 @@ function make_card(c, by_key) {
 
   const name = document.createElement('span');
   name.className = 'chirp-name';
-  name.textContent = '@' + short(c.pub);
+  name.appendChild(document.createTextNode('@'));
+  name.appendChild(colored_pub_prefix(c.pub, c.pub.slice(5,8), null));
   if (c.pub === my_pub) {
     const b = document.createElement('span');
     b.className = 'me-badge';
@@ -339,10 +371,7 @@ function make_card(c, by_key) {
   }
   name.onclick = () => setFilter(c.pub);
 
-  const handle = document.createElement('span');
-  handle.className = 'chirp-handle';
-  handle.textContent = c.pub.slice(0,16) + '…';
-  handle.title = c.pub;
+  name.title = c.pub;
 
   const ts_el = document.createElement('span');
   ts_el.className = 'chirp-ts';
@@ -350,7 +379,6 @@ function make_card(c, by_key) {
   ts_el.title = new Date(c.ts).toLocaleString();
 
   hdr.appendChild(name);
-  hdr.appendChild(handle);
   hdr.appendChild(ts_el);
   body.appendChild(hdr);
 
@@ -361,12 +389,9 @@ function make_card(c, by_key) {
     const a = document.createElement('a');
     a.textContent = '↳ @' + short(c.reply_pub) + '…';
     a.title = c.reply_pub;
-    // scroll to parent if visible, else filter to parent
     a.onclick = (e) => {
       e.stopPropagation();
-      const pk = c.reply_pub + ':' + c.reply_ts;
-      const parent = by_key[pk];
-      if (parent) setFilter(c.reply_pub);
+      scrollToChirp(c.reply_pub, c.reply_ts);
     };
     rtl.appendChild(a);
     body.appendChild(rtl);
@@ -410,14 +435,33 @@ function clearFilter() {
 // ---- reply ----
 function start_reply(c) {
   reply_to = { pub: c.pub, ts: c.ts };
-  document.getElementById('reply-indicator').style.display = '';
+  document.getElementById('reply-indicator').style.display = 'block';
   document.getElementById('reply-to-label').textContent = '@' + short(c.pub) + '…';
+  const preview = document.getElementById('reply-preview');
+  preview.textContent = c.text.length > 120 ? c.text.slice(0, 120) + '…' : c.text;
+  preview.style.display = 'block';
   document.getElementById('chirp-input').focus();
   window.scrollTo({top: 0, behavior: 'smooth'});
 }
 function cancelReply() {
   reply_to = null;
   document.getElementById('reply-indicator').style.display = 'none';
+  document.getElementById('reply-preview').style.display = 'none';
+}
+
+function scrollToChirp(pub, ts) {
+  const key = pub + ':' + ts;
+  if (filter_pub) {
+    filter_pub = null;
+    document.getElementById('filter-bar').style.display = 'none';
+    render();
+  }
+  const card = document.querySelector('[data-key="' + key + '"]');
+  if (card) {
+    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    card.classList.add('flash');
+    card.addEventListener('animationend', () => card.classList.remove('flash'), { once: true });
+  }
 }
 
 // ---- compose ----
@@ -456,36 +500,20 @@ function post() {
 }
 
 // ---- wire protocol ----
-// encode a chirp into a GroupChatMessage for the network
 function encode(c) {
-  const payload = { t: c.text };
-  if (c.reply_pub && c.reply_ts) payload.r = c.reply_pub + ':' + c.reply_ts;
-  return {
-    GroupChatMessage: {
-      group_name: GROUP,
-      text: JSON.stringify(payload),
-      timestamp: c.ts,
-    }
-  };
+  const m = { ts: c.ts, text: c.text };
+  if (c.reply_pub && c.reply_ts) { m.reply_pub = c.reply_pub; m.reply_ts = c.reply_ts; }
+  return { ChirpMessage: m };
 }
 
-// decode a GroupChatMessage from the network into a chirp object
-function decode(pub, gcm) {
-  let text = gcm.text, reply_pub = null, reply_ts = null;
-  try {
-    const obj = JSON.parse(gcm.text);
-    if (obj && typeof obj.t === 'string') {
-      text = obj.t;
-      if (typeof obj.r === 'string') {
-        const colon = obj.r.lastIndexOf(':');
-        if (colon > 0) {
-          reply_pub = obj.r.slice(0, colon);
-          reply_ts  = parseInt(obj.r.slice(colon + 1), 10);
-        }
-      }
-    }
-  } catch {}
-  return { pub, ts: gcm.timestamp, text, reply_pub, reply_ts };
+function decode(pub, m) {
+  return {
+    pub,
+    ts:        m.ts,
+    text:      m.text,
+    reply_pub: m.reply_pub || null,
+    reply_ts:  m.reply_ts  || null,
+  };
 }
 
 function my_chirps() { return load().filter(c => c.pub === my_pub); }
@@ -546,8 +574,8 @@ function connect() {
         if (!Array.isArray(inner)) continue;
         const batch = [];
         for (const m of inner) {
-          if (m && 'GroupChatMessage' in m && m.GroupChatMessage.group_name === GROUP)
-            batch.push(decode(from, m.GroupChatMessage));
+          if (m && 'ChirpMessage' in m)
+            batch.push(decode(from, m.ChirpMessage));
         }
         if (batch.length) ingest(batch);
       }
