@@ -28,6 +28,17 @@ canvas { border: 1px solid #ccc; max-width: 100%; display: block; }
            display: none; border-radius: 4px; max-width: 420px;
            word-break: break-all; box-shadow: 0 2px 8px rgba(0,0,0,0.12); z-index: 100; }
 #tooltip b { font-family: sans-serif; color: #555; font-size: 11px; }
+#peer-popup { position: fixed; display: none; background: rgba(255,255,255,0.98);
+              border: 1px solid #aaa; padding: 10px 14px; font-size: 12px;
+              font-family: 'Courier New', monospace; border-radius: 4px;
+              max-width: 380px; word-break: break-all;
+              box-shadow: 0 4px 16px rgba(0,0,0,0.18); z-index: 200; }
+#peer-popup b { font-family: sans-serif; color: #555; font-size: 11px; }
+.pp-close { float: right; font-family: sans-serif; font-size: 16px; cursor: pointer;
+            color: #888; margin-left: 8px; line-height: 1; }
+.pp-close:hover { color: #333; }
+.pp-chat { color: #0055cc; font-family: sans-serif; font-weight: 600; text-decoration: none; }
+.pp-chat:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -54,6 +65,7 @@ canvas { border: 1px solid #ccc; max-width: 100%; display: block; }
 </div>
 
 <div id="tooltip"></div>
+<div id="peer-popup"></div>
 
 <script>
 const BASE = 'http://localhost:24255';
@@ -370,15 +382,23 @@ canvas.addEventListener('mousemove', e => {
   }
 
   if (hit) {
-    tooltip.style.display = 'block';
-    tooltip.style.left = (e.clientX + 16) + 'px';
-    tooltip.style.top  = (e.clientY - 8)  + 'px';
     const pub = hit.peer.pub.replace('0x', '');
     tooltip.innerHTML =
       `<b>ed25519</b><br>${coloredPubHtml(pub)}<br><br>` +
       `<b>delay</b>&nbsp;&nbsp;${Math.round(hit.peer.delay_ms)} ms<br>` +
       `<b>addr</b>&nbsp;&nbsp;&nbsp;${hit.peer.addr}<br><br>` +
-      `<span style="color:#0055cc;font-family:sans-serif">click to open chat</span>`;
+      `<span style="color:#0055cc;font-family:sans-serif">click for details</span>`;
+    tooltip.style.left = '-9999px';
+    tooltip.style.top  = '-9999px';
+    tooltip.style.display = 'block';
+    const tw = tooltip.offsetWidth, th = tooltip.offsetHeight;
+    let tx = e.clientX + 16, ty = e.clientY - 8;
+    if (tx + tw > window.innerWidth  - 8) tx = e.clientX - tw - 16;
+    if (ty + th > window.innerHeight - 8) ty = window.innerHeight - th - 8;
+    if (ty < 8) ty = 8;
+    if (tx < 8) tx = 8;
+    tooltip.style.left = tx + 'px';
+    tooltip.style.top  = ty + 'px';
     canvas.style.cursor = 'pointer';
   } else {
     tooltip.style.display = 'none';
@@ -388,6 +408,22 @@ canvas.addEventListener('mousemove', e => {
 
 canvas.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
 
+function positionEl(el, cx, cy) {
+  el.style.left = '-9999px';
+  el.style.top  = '-9999px';
+  el.style.display = 'block';
+  const ew = el.offsetWidth, eh = el.offsetHeight;
+  let x = cx + 16, y = cy - 8;
+  if (x + ew > window.innerWidth  - 8) x = cx - ew - 16;
+  if (y + eh > window.innerHeight - 8) y = window.innerHeight - eh - 8;
+  if (y < 8) y = 8;
+  if (x < 8) x = 8;
+  el.style.left = x + 'px';
+  el.style.top  = y + 'px';
+}
+
+const peerPopup = document.getElementById('peer-popup');
+
 canvas.addEventListener('click', e => {
   const rect = canvas.getBoundingClientRect();
   const scaleX = W / rect.width;
@@ -395,14 +431,31 @@ canvas.addEventListener('click', e => {
   const mx = (e.clientX - rect.left) * scaleX;
   const my = (e.clientY - rect.top)  * scaleY;
 
+  let hit = null;
   for (const h of peerHitboxes) {
     const dx = mx - h.x, dy = my - h.y;
-    if (dx*dx + dy*dy <= (h.r + 6) * (h.r + 6)) {
-      const pub = h.peer.pub.replace('0x', '');
-      window.open(`chat.html?ed25519=${pub}`, '_blank');
-      break;
-    }
+    if (dx*dx + dy*dy <= (h.r + 6) * (h.r + 6)) { hit = h; break; }
   }
+
+  if (hit) {
+    e.stopPropagation();
+    tooltip.style.display = 'none';
+    const pub = hit.peer.pub.replace('0x', '');
+    peerPopup.innerHTML =
+      `<span class="pp-close" id="pp-close">&#x2715;</span>` +
+      `<b>ed25519</b><br>${coloredPubHtml(pub)}<br><br>` +
+      `<b>delay</b>&nbsp;&nbsp;${Math.round(hit.peer.delay_ms)} ms<br>` +
+      `<b>addr</b>&nbsp;&nbsp;&nbsp;${hit.peer.addr}<br><br>` +
+      `<a href="chat.html?ed25519=${encodeURIComponent(pub)}" target="_blank" class="pp-chat">&#x1F4AC; open chat &rarr;</a>`;
+    positionEl(peerPopup, e.clientX, e.clientY);
+    document.getElementById('pp-close').onclick = () => { peerPopup.style.display = 'none'; };
+  } else {
+    peerPopup.style.display = 'none';
+  }
+});
+
+document.addEventListener('click', e => {
+  if (!peerPopup.contains(e.target)) peerPopup.style.display = 'none';
 });
 
 // -- Init ---------------------------------------------------------------------
