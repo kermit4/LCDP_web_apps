@@ -48,6 +48,7 @@ code.ic { background:#e0e0e0; padding:1px 4px; border-radius:2px; font-size:92%;
   <span id=status_text>connecting...</span>
   &nbsp;&nbsp;me: <span id=my_pub_display title="">...</span>
   &nbsp;&nbsp;<button id=notif_btn style="font-size:11px;padding:1px 6px;cursor:pointer;">Enable notifications</button>
+  &nbsp;&nbsp;nickname: <input id=nick_input type=text placeholder="anonymous" maxlength=32 style="font-size:11px;font-family:monospace;padding:1px 4px;width:100px;border:1px solid #bbb;border-radius:2px;background:#f5f5f5;">
   &nbsp;&nbsp;<span style="color:#999;font-size:10px;" title="Wrap code in triple backticks:&#10;&#96;&#96;&#96;rust&#10;fn main() {}&#10;&#96;&#96;&#96;&#10;Language optional — auto-detected if omitted.&#10;Inline: &#96;code&#96;">&#96;&#96;&#96;lang for code</span>
 </div>
 <div id=inputbar>
@@ -58,6 +59,7 @@ code.ic { background:#e0e0e0; padding:1px 4px; border-radius:2px; font-size:92%;
 <script>
 const GROUP_NAME = 'main';
 const LS_KEY = 'gc_messages_' + GROUP_NAME;
+const LS_NICK = 'gc_nickname';
 
 let my_ed25519 = null;
 let socket;
@@ -393,6 +395,12 @@ function render_messages() {
 
         meta.appendChild(ts_span);
         meta.appendChild(key_link);
+        if (m.nickname) {
+            const nick_span = document.createElement('span');
+            nick_span.style.cssText = 'color:#666;font-weight:normal;margin-left:4px;';
+            nick_span.textContent = '(' + m.nickname + ')';
+            meta.appendChild(nick_span);
+        }
 
         row.appendChild(meta);
         if (m.action) {
@@ -421,6 +429,7 @@ function send_to_peer(peer_pub) {
         messages: msgs.map(m => {
             const gcm = { group_name: m.group_name, text: m.text, timestamp: m.timestamp };
             if (m.action) gcm.action = m.action;
+            if (m.nickname) gcm.nickname = m.nickname;
             return {GroupChatMessage: gcm};
         })
     }}]));
@@ -629,6 +638,7 @@ function connect() {
                                 group_name: gcm.group_name
                             };
                             if (gcm.action) entry.action = gcm.action;
+                            if (gcm.nickname) entry.nickname = gcm.nickname;
                             chat_batch.push(entry);
                         }
                     }
@@ -668,6 +678,8 @@ function send_message() {
     }
     const m = { pub_key: my_ed25519, text, timestamp: Date.now(), group_name: GROUP_NAME };
     if (action) m.action = action;
+    const nick = nick_input.value.trim();
+    if (nick) m.nickname = nick;
     add_messages([m]);
     input.value = '';
     send_to_all_peers();
@@ -684,6 +696,11 @@ document.getElementById('msg_input').addEventListener('keydown', e => {
 if (!tauri_invoke && 'serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch(e => console.warn('SW register failed:', e));
 }
+
+// Nickname
+const nick_input = document.getElementById('nick_input');
+nick_input.value = localStorage.getItem(LS_NICK) || '';
+nick_input.addEventListener('input', () => localStorage.setItem(LS_NICK, nick_input.value.trim()));
 
 // Init: render stored messages immediately, then connect and start retransmit loop
 render_messages();
