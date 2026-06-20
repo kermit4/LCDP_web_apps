@@ -31,6 +31,10 @@ pre.code-block code { font-family:monospace; }
 .copy-btn.copied { color:#6a9955; }
 code.ic { background:#e0e0e0; padding:1px 4px; border-radius:2px; font-size:92%; color:#333; }
 .hl-kw{color:#0000ff}.hl-ty{color:#267f99}.hl-st{color:#a31515}.hl-cm{color:#4a7c59;font-style:italic}.hl-nm{color:#098658}.hl-mc{color:#af00db}.hl-at{color:#af00db}.hl-lt{color:#001080}.hl-fn{color:#795e26}
+.pub-menu { position:fixed; background:#fff; border:1px solid #aaa; border-radius:4px; box-shadow:2px 2px 8px rgba(0,0,0,.2); z-index:1000; font-size:13px; min-width:160px; overflow:hidden; }
+.pub-menu a { display:block; padding:7px 14px; color:#111; text-decoration:none; white-space:nowrap; }
+.pub-menu a:hover { background:#e8eaf0; }
+.pub-key-btn { cursor:pointer; }
 </style>
 </head>
 <body>
@@ -337,11 +341,55 @@ function render_messages() {
         const ts_span = document.createElement('span');
         ts_span.textContent = '[' + fmt_ts(m.timestamp) + '] ';
 
-        const key_link = document.createElement('a');
-        key_link.href = 'chat.html?ed25519=' + m.pub_key;
-        key_link.target = '_blank';
+        const key_link = document.createElement('span');
+        key_link.className = 'pub-key-btn';
         key_link.title = m.pub_key;
         key_link.appendChild(colored_pub_prefix(m.pub_key));
+        (function(pub) {
+            key_link.onclick = function(e) {
+                e.stopPropagation();
+                document.querySelectorAll('.pub-menu').forEach(function(el) { el.remove(); });
+                const menu = document.createElement('div');
+                menu.className = 'pub-menu';
+                const items = [
+                    { label: 'Chat',      url: 'chat.html?ed25519='  + pub, new_window: true },
+                    { label: 'Pong',      url: 'pong.html?ed25519='  + pub, new_window: true },
+                    { label: 'Video',     url: 'video.html?ed25519=' + pub, new_window: true },
+                    { label: 'Home page', url: 'http://127.0.0.1:24255/latest/' + pub + '/', new_window: false },
+                ];
+                items.forEach(function(item) {
+                    const a = document.createElement('a');
+                    a.href = item.url;
+                    a.textContent = item.label;
+                    a.rel = 'noopener noreferrer';
+                    if (item.new_window) {
+                        a.onclick = function(ev) {
+                            ev.preventDefault();
+                            window.open(item.url, '_blank', 'width=1000,height=720,noopener,noreferrer');
+                            menu.remove();
+                        };
+                    } else {
+                        a.target = '_blank';
+                        a.onclick = function() { menu.remove(); };
+                    }
+                    menu.appendChild(a);
+                });
+                menu.style.left = e.clientX + 'px';
+                menu.style.top  = e.clientY + 'px';
+                document.body.appendChild(menu);
+                // Clamp so it doesn't go off the right/bottom edge
+                const r = menu.getBoundingClientRect();
+                if (r.right  > window.innerWidth)  menu.style.left = (window.innerWidth  - r.width  - 4) + 'px';
+                if (r.bottom > window.innerHeight)  menu.style.top  = (window.innerHeight - r.height - 4) + 'px';
+                const dismiss = function(ev) {
+                    if (!menu.contains(ev.target)) {
+                        menu.remove();
+                        document.removeEventListener('click', dismiss, true);
+                    }
+                };
+                setTimeout(function() { document.addEventListener('click', dismiss, true); }, 0);
+            };
+        })(m.pub_key);
 
         meta.appendChild(ts_span);
         meta.appendChild(key_link);
