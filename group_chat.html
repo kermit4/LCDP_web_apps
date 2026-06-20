@@ -31,9 +31,17 @@ pre.code-block code { font-family:monospace; }
 .copy-btn.copied { color:#6a9955; }
 code.ic { background:#e0e0e0; padding:1px 4px; border-radius:2px; font-size:92%; color:#333; }
 .hl-kw{color:#0000ff}.hl-ty{color:#267f99}.hl-st{color:#a31515}.hl-cm{color:#4a7c59;font-style:italic}.hl-nm{color:#098658}.hl-mc{color:#af00db}.hl-at{color:#af00db}.hl-lt{color:#001080}.hl-fn{color:#795e26}
-.pub-menu { position:fixed; background:#fff; border:1px solid #aaa; border-radius:4px; box-shadow:2px 2px 8px rgba(0,0,0,.2); z-index:1000; font-size:13px; min-width:160px; overflow:hidden; }
-.pub-menu a { display:block; padding:7px 14px; color:#111; text-decoration:none; white-space:nowrap; }
-.pub-menu a:hover { background:#e8eaf0; }
+#peer-popup { position: fixed; display: none; background: rgba(255,255,255,0.98);
+  border: 1px solid #aaa; padding: 10px 14px; font-size: 12px;
+  font-family: 'Courier New', monospace; border-radius: 4px;
+  max-width: 380px; word-break: break-all;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.18); z-index: 200; }
+#peer-popup b { font-family: sans-serif; color: #555; font-size: 11px; }
+.pp-close { float: right; font-family: sans-serif; font-size: 16px; cursor: pointer;
+  color: #888; margin-left: 8px; line-height: 1; }
+.pp-close:hover { color: #333; }
+.pp-chat { color: #0055cc; font-family: sans-serif; font-weight: 600; text-decoration: none; }
+.pp-chat:hover { text-decoration: underline; }
 .pub-key-btn { cursor:pointer; }
 </style>
 </head>
@@ -44,6 +52,7 @@ code.ic { background:#e0e0e0; padding:1px 4px; border-radius:2px; font-size:92%;
   <span><span id=peer_count>0</span> peers &nbsp;|&nbsp; <a href=/ style="color:#aaa;">status</a></span>
 </div>
 <div id=messages></div>
+<div id="peer-popup"></div>
 <div id=statusbar>
   <span id=status_text>connecting...</span>
   &nbsp;&nbsp;me: <span id=my_pub_display title="">...</span>
@@ -119,6 +128,35 @@ function colored_pub_prefix(pub_key) {
     }
     wrap.appendChild(document.createTextNode('...'));
     return wrap;
+}
+
+function coloredPubHtml(pub) {
+    let html = '';
+    for (let i = 0; i < 5 && i < pub.length; i++) {
+        const nibble = parseInt(pub[i], 16);
+        const color  = NIBBLE_COLORS[nibble & 7];
+        if (nibble & 8) {
+            html += `<span style="background:${color};color:#fff;padding:0 1px">${pub[i]}</span>`;
+        } else {
+            html += `<span style="color:${color}">${pub[i]}</span>`;
+        }
+    }
+    html += pub.slice(5);
+    return html;
+}
+
+function positionEl(el, cx, cy) {
+    el.style.left = '-9999px';
+    el.style.top  = '-9999px';
+    el.style.display = 'block';
+    const ew = el.offsetWidth, eh = el.offsetHeight;
+    let x = cx + 16, y = cy - 8;
+    if (x + ew > window.innerWidth  - 8) x = cx - ew - 16;
+    if (y + eh > window.innerHeight - 8) y = window.innerHeight - eh - 8;
+    if (y < 8) y = 8;
+    if (x < 8) x = 8;
+    el.style.left = x + 'px';
+    el.style.top  = y + 'px';
 }
 
 function fmt_ts(ts) {
@@ -350,46 +388,16 @@ function render_messages() {
         (function(pub) {
             key_link.onclick = function(e) {
                 e.stopPropagation();
-                document.querySelectorAll('.pub-menu').forEach(function(el) { el.remove(); });
-                const menu = document.createElement('div');
-                menu.className = 'pub-menu';
-                const items = [
-                    { label: 'Chat',      url: 'chat.html?ed25519='  + pub, new_window: true },
-                    { label: 'Pong',      url: 'pong.html?ed25519='  + pub, new_window: true },
-                    { label: 'Video',     url: 'video.html?ed25519=' + pub, new_window: true },
-                    { label: 'Home page', url: 'http://127.0.0.1:24255/latest/' + pub + '/', new_window: false },
-                ];
-                items.forEach(function(item) {
-                    const a = document.createElement('a');
-                    a.href = item.url;
-                    a.textContent = item.label;
-                    a.rel = 'noopener noreferrer';
-                    if (item.new_window) {
-                        a.onclick = function(ev) {
-                            ev.preventDefault();
-                            window.open(item.url, '_blank', 'width=1000,height=720,noopener,noreferrer');
-                            menu.remove();
-                        };
-                    } else {
-                        a.target = '_blank';
-                        a.onclick = function() { menu.remove(); };
-                    }
-                    menu.appendChild(a);
-                });
-                menu.style.left = e.clientX + 'px';
-                menu.style.top  = e.clientY + 'px';
-                document.body.appendChild(menu);
-                // Clamp so it doesn't go off the right/bottom edge
-                const r = menu.getBoundingClientRect();
-                if (r.right  > window.innerWidth)  menu.style.left = (window.innerWidth  - r.width  - 4) + 'px';
-                if (r.bottom > window.innerHeight)  menu.style.top  = (window.innerHeight - r.height - 4) + 'px';
-                const dismiss = function(ev) {
-                    if (!menu.contains(ev.target)) {
-                        menu.remove();
-                        document.removeEventListener('click', dismiss, true);
-                    }
-                };
-                setTimeout(function() { document.addEventListener('click', dismiss, true); }, 0);
+                const popup = document.getElementById('peer-popup');
+                popup.innerHTML =
+                    `<span class="pp-close" id="pp-close">&#x2715;</span>` +
+                    `<b>ed25519</b><br>${coloredPubHtml(pub)}<br><br>` +
+                    `<a href="chat.html?ed25519=${encodeURIComponent(pub)}" class="pp-chat" onclick="event.preventDefault();window.open(this.href,'_blank','width=1000,height=720,noopener,noreferrer')">&#x1F4AC; chat &rarr;</a>` +
+                    `<br><a href="pong.html?ed25519=${encodeURIComponent(pub)}" class="pp-chat" onclick="event.preventDefault();window.open(this.href,'_blank','width=1000,height=720,noopener,noreferrer')">&#x1F3D3; pong &rarr;</a>` +
+                    `<br><a href="video.html?ed25519=${encodeURIComponent(pub)}" class="pp-chat" onclick="event.preventDefault();window.open(this.href,'_blank','width=1000,height=720,noopener,noreferrer')">&#x1F4F9; video &rarr;</a>` +
+                    `<br><a href="http://127.0.0.1:24255/latest/${encodeURIComponent(pub)}/" target="_blank" class="pp-chat">&#x1F3E0; home page &rarr;</a>`;
+                positionEl(popup, e.clientX, e.clientY);
+                document.getElementById('pp-close').onclick = function() { popup.style.display = 'none'; };
             };
         })(m.pub_key);
 
@@ -492,6 +500,11 @@ function stop_blink() {
 let win_focused = document.hasFocus();
 window.addEventListener('focus', () => { win_focused = true;  stop_blink(); });
 window.addEventListener('blur',  () => { win_focused = false; });
+
+document.addEventListener('click', e => {
+    const popup = document.getElementById('peer-popup');
+    if (popup && !popup.contains(e.target)) popup.style.display = 'none';
+});
 
 // Tauri IPC -- present on Android (Tauri APK), null in a plain browser.
 const tauri_invoke =

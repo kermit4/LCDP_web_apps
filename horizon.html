@@ -446,7 +446,10 @@ canvas.addEventListener('click', e => {
       `<b>ed25519</b><br>${coloredPubHtml(pub)}<br><br>` +
       `<b>delay</b>&nbsp;&nbsp;${Math.round(hit.peer.delay_ms)} ms<br>` +
       `<b>addr</b>&nbsp;&nbsp;&nbsp;${hit.peer.addr}<br><br>` +
-      `<a href="chat.html?ed25519=${encodeURIComponent(pub)}" target="_blank" class="pp-chat">&#x1F4AC; open chat &rarr;</a>`;
+      `<a href="chat.html?ed25519=${encodeURIComponent(pub)}" class="pp-chat" onclick="event.preventDefault();window.open(this.href,'_blank','width=1000,height=720,noopener,noreferrer')">&#x1F4AC; chat &rarr;</a>` +
+      `<br><a href="pong.html?ed25519=${encodeURIComponent(pub)}" class="pp-chat" onclick="event.preventDefault();window.open(this.href,'_blank','width=1000,height=720,noopener,noreferrer')">&#x1F3D3; pong &rarr;</a>` +
+      `<br><a href="video.html?ed25519=${encodeURIComponent(pub)}" class="pp-chat" onclick="event.preventDefault();window.open(this.href,'_blank','width=1000,height=720,noopener,noreferrer')">&#x1F4F9; video &rarr;</a>` +
+      `<br><a href="http://127.0.0.1:24255/latest/${encodeURIComponent(pub)}/" target="_blank" class="pp-chat">&#x1F3E0; home page &rarr;</a>`;
     positionEl(peerPopup, e.clientX, e.clientY);
     document.getElementById('pp-close').onclick = () => { peerPopup.style.display = 'none'; };
   } else {
