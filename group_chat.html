@@ -76,6 +76,13 @@ let known_peers = new Set();
 let backoff_delay = 500;
 let backoff_timer = null;
 
+const unseen_keys  = new Set();
+const seen_accum   = new Map();
+const unseen_els   = new Map();
+let   visible_keys = new Set();
+let   seen_ticker  = null;
+let   unseen_io    = null;
+
 function strip_0x(s) { return (s && s.startsWith('0x')) ? s.slice(2) : s; }
 
 function load_messages() {
@@ -100,6 +107,11 @@ function add_messages(new_msgs) {
         }
     }
     if (added.length > 0) {
+        for (const m of added) {
+            const k = m.pub_key + ':' + m.timestamp;
+            unseen_keys.add(k);
+            if (!seen_accum.has(k)) seen_accum.set(k, 0);
+        }
         save_messages(existing);
         render_messages();
         const from_others = added.filter(m => m.pub_key !== my_ed25519);
@@ -160,8 +172,68 @@ function positionEl(el, cx, cy) {
 }
 
 function fmt_ts(ts) {
-    // Round to nearest second, then format in local time
-    return new Date(Math.round(ts / 1000) * 1000).toLocaleString();
+    return new Date(Math.round(ts / 1000) * 1000).toISOString().replace('T', '-').slice(0, 19) + 'Z';
+}
+
+function apply_hl(el, alpha) {
+    if (alpha < 0.005) {
+        el.style.backgroundColor = '';
+        el.style.boxShadow = '';
+    } else {
+        el.style.backgroundColor = `rgba(255,248,200,${alpha.toFixed(3)})`;
+        el.style.boxShadow = `inset 3px 0 0 rgba(240,192,64,${alpha.toFixed(3)})`;
+    }
+}
+
+function tick_seen() {
+    seen_ticker = null;
+    if (unseen_keys.size === 0 || visible_keys.size === 0 || !win_focused) return;
+    const now = performance.now();
+    const delta = Math.min(now - (tick_seen.last || now), 200);
+    tick_seen.last = now;
+    const done = [];
+    for (const key of visible_keys) {
+        if (!unseen_keys.has(key)) { done.push(key); continue; }
+        const accum = Math.min((seen_accum.get(key) || 0) + delta, 10000);
+        seen_accum.set(key, accum);
+        const el = unseen_els.get(key);
+        if (el) apply_hl(el, 1 - accum / 10000);
+        if (accum >= 10000) done.push(key);
+    }
+    for (const key of done) {
+        unseen_keys.delete(key);
+        seen_accum.delete(key);
+        visible_keys.delete(key);
+        const el = unseen_els.get(key);
+        if (el) apply_hl(el, 0);
+        unseen_els.delete(key);
+    }
+    if (unseen_keys.size > 0 && visible_keys.size > 0 && win_focused)
+        seen_ticker = requestAnimationFrame(tick_seen);
+}
+
+function start_seen_tick() {
+    if (seen_ticker || unseen_keys.size === 0 || visible_keys.size === 0 || !win_focused) return;
+    tick_seen.last = performance.now();
+    seen_ticker = requestAnimationFrame(tick_seen);
+}
+
+function setup_unseen_io() {
+    if (unseen_io) unseen_io.disconnect();
+    visible_keys = new Set();
+    if (unseen_keys.size === 0) { unseen_io = null; return; }
+    unseen_io = new IntersectionObserver(entries => {
+        let changed = false;
+        for (const e of entries) {
+            const key = e.target.dataset.msgKey;
+            if (!key || !unseen_keys.has(key)) continue;
+            if (e.isIntersecting) { visible_keys.add(key); changed = true; }
+            else visible_keys.delete(key);
+        }
+        if (changed) start_seen_tick();
+    }, { threshold: 0.1 });
+    for (const [, el] of unseen_els)
+        if (el.isConnected) unseen_io.observe(el);
 }
 
 // Matches URLs (scheme://...) or 64-hex-char hashes in isolation.
@@ -371,6 +443,7 @@ function render_messages() {
     const container = document.getElementById('messages');
     const at_bottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 30;
     container.innerHTML = '';
+    unseen_els.clear();
     for (const m of msgs) {
         const row = document.createElement('div');
         row.className = 'msg-row';
@@ -419,9 +492,16 @@ function render_messages() {
         } else {
             render_message_text(row, m.text);
         }
+        const k = m.pub_key + ':' + m.timestamp;
+        if (unseen_keys.has(k)) {
+            row.dataset.msgKey = k;
+            apply_hl(row, 1 - (seen_accum.get(k) || 0) / 10000);
+            unseen_els.set(k, row);
+        }
         container.appendChild(row);
     }
     if (at_bottom) container.scrollTop = container.scrollHeight;
+    setup_unseen_io();
 }
 
 function my_msgs() {
@@ -498,7 +578,7 @@ function stop_blink() {
 }
 
 let win_focused = document.hasFocus();
-window.addEventListener('focus', () => { win_focused = true;  stop_blink(); });
+window.addEventListener('focus', () => { win_focused = true;  stop_blink(); start_seen_tick(); });
 window.addEventListener('blur',  () => { win_focused = false; });
 
 document.addEventListener('click', e => {
@@ -633,7 +713,7 @@ function connect() {
                 try { outer = JSON.parse(event.data); } catch(e) { return; }
                 let messages, forwarded = false, src = null;
                 if (outer[0] && 'Forwarded' in outer[0]) {
-                    src = outer[0].Forwarded.from_ed25519;
+                    src = strip_0x(outer[0].Forwarded.from_ed25519);
                     forwarded = true;
                     try { messages = JSON.parse(outer[0].Forwarded.messages); } catch(e) { return; }
                 } else {
