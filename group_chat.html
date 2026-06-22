@@ -510,17 +510,35 @@ function my_msgs() {
 
 function send_to_peer(peer_pub) {
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    const msgs = my_msgs();
+    const msgs = my_msgs().slice().reverse(); // newest to oldest
     if (msgs.length === 0) return;
-    socket.send(JSON.stringify([{Forward:{
+
+    const make_msg = m => {
+        const gcm = { group_name: m.group_name, text: m.text, timestamp: m.timestamp };
+        if (m.action) gcm.action = m.action;
+        if (m.nickname) gcm.nickname = m.nickname;
+        return {GroupChatMessage: gcm};
+    };
+    const make_payload = batch => JSON.stringify([{Forward:{
         to_ed25519: peer_pub,
-        messages: msgs.map(m => {
-            const gcm = { group_name: m.group_name, text: m.text, timestamp: m.timestamp };
-            if (m.action) gcm.action = m.action;
-            if (m.nickname) gcm.nickname = m.nickname;
-            return {GroupChatMessage: gcm};
-        })
-    }}]));
+        messages: batch.map(make_msg)
+    }}]);
+
+    let batch = [];
+    for (const m of msgs) {
+        batch.push(m);
+        if (make_payload(batch).length >= 4096) {
+            batch.pop();
+            if (batch.length > 0) {
+                socket.send(make_payload(batch));
+                batch = [m];
+            } else {
+                socket.send(make_payload([m]));
+                batch = [];
+            }
+        }
+    }
+    if (batch.length > 0) socket.send(make_payload(batch));
 }
 
 function send_to_all_peers() {
