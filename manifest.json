@@ -1,11 +1,23 @@
 {
   "name": "Group Chat",
   "short_name": "Group Chat",
+  "description": "Peer-to-peer group chat",
   "start_url": "group_chat.html",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#f5f5f5",
   "theme_color": "#222222",
+  "categories": ["social", "utilities"],
   "icons": [
     { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ],
+  "shortcuts": [
+    {
+      "name": "Open Group Chat",
+      "short_name": "Chat",
+      "description": "Open the group chat",
+      "url": "group_chat.html",
+      "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+    }
   ]
 }
