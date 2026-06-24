@@ -76,9 +76,10 @@ let known_peers = new Set();
 let backoff_delay = 500;
 let backoff_timer = null;
 
-const unseen_keys  = new Set();
-const seen_accum   = new Map();
-const unseen_els   = new Map();
+const unseen_keys       = new Set();
+const seen_accum        = new Map();
+const unseen_els        = new Map();
+const pending_notif_tags = new Set();
 let   visible_keys = new Set();
 let   seen_ticker  = null;
 let   unseen_io    = null;
@@ -194,6 +195,10 @@ function tick_seen() {
     const done = [];
     for (const key of visible_keys) {
         if (!unseen_keys.has(key)) { done.push(key); continue; }
+        if (pending_notif_tags.has(key)) {
+            navigator.serviceWorker?.controller?.postMessage({ type: 'close_tag', tag: key });
+            pending_notif_tags.delete(key);
+        }
         const accum = Math.min((seen_accum.get(key) || 0) + delta, 10000);
         seen_accum.set(key, accum);
         const el = unseen_els.get(key);
@@ -596,7 +601,7 @@ function stop_blink() {
 }
 
 let win_focused = document.hasFocus();
-window.addEventListener('focus', () => { win_focused = true;  stop_blink(); start_seen_tick(); navigator.serviceWorker?.controller?.postMessage({ type: 'close_all' }); });
+window.addEventListener('focus', () => { win_focused = true;  stop_blink(); start_seen_tick(); });
 window.addEventListener('blur',  () => { win_focused = false; });
 
 document.addEventListener('click', e => {
@@ -633,7 +638,7 @@ async function notif_request() {
     return false;
 }
 
-function notif_send(title, body) {
+function notif_send(title, body, tag) {
     if (tauri_invoke) {
         tauri_notif('notify', { options: { title, body } });
         return;
@@ -643,9 +648,9 @@ function notif_send(title, body) {
     // Direct new Notification() is suppressed in that case.
     const ctrl = navigator.serviceWorker?.controller;
     if (ctrl) {
-        ctrl.postMessage({ type: 'notify', title, body });
+        ctrl.postMessage({ type: 'notify', title, body, tag });
     } else {
-        new Notification(title, { body });
+        new Notification(title, tag ? { body, tag } : { body });
     }
 }
 
@@ -654,7 +659,9 @@ async function notify_new(msgs) {
     start_blink();
     if (await notif_active()) {
         const m = msgs.reduce((a, b) => a.timestamp > b.timestamp ? a : b);
-        notif_send('Group Chat', m.pub_key.substring(0, 12) + '...: ' + m.text.substring(0, 100));
+        const tag = m.pub_key + ':' + m.timestamp;
+        pending_notif_tags.add(tag);
+        notif_send('Group Chat', m.pub_key.substring(0, 12) + '...: ' + m.text.substring(0, 100), tag);
     }
 }
 

@@ -24,10 +24,12 @@ self.addEventListener('fetch', e => {
 
 self.addEventListener('message', e => {
     if (e.data && e.data.type === 'notify') {
-        self.registration.showNotification(e.data.title, { body: e.data.body });
+        const opts = { body: e.data.body };
+        if (e.data.tag) opts.tag = e.data.tag;
+        self.registration.showNotification(e.data.title, opts);
     }
-    if (e.data && e.data.type === 'close_all') {
-        self.registration.getNotifications().then(ns => ns.forEach(n => n.close()));
+    if (e.data && e.data.type === 'close_tag') {
+        self.registration.getNotifications({ tag: e.data.tag }).then(ns => ns.forEach(n => n.close()));
     }
 });
 
