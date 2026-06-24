@@ -26,6 +26,9 @@ self.addEventListener('message', e => {
     if (e.data && e.data.type === 'notify') {
         self.registration.showNotification(e.data.title, { body: e.data.body });
     }
+    if (e.data && e.data.type === 'close_all') {
+        self.registration.getNotifications().then(ns => ns.forEach(n => n.close()));
+    }
 });
 
 self.addEventListener('notificationclick', e => {

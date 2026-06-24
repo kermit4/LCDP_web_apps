@@ -596,7 +596,7 @@ function stop_blink() {
 }
 
 let win_focused = document.hasFocus();
-window.addEventListener('focus', () => { win_focused = true;  stop_blink(); start_seen_tick(); });
+window.addEventListener('focus', () => { win_focused = true;  stop_blink(); start_seen_tick(); navigator.serviceWorker?.controller?.postMessage({ type: 'close_all' }); });
 window.addEventListener('blur',  () => { win_focused = false; });
 
 document.addEventListener('click', e => {
