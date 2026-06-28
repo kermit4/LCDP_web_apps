@@ -49,6 +49,7 @@ code.ic { background:#e0e0e0; padding:1px 4px; border-radius:2px; font-size:92%;
 
 <div id=topbar>
   <span>Group Chat &mdash; <b id=group_name_display>main</b></span>
+  <span id=ws_uptime style="font-size:11px;color:#bbb;"></span>
   <span><span id=peer_count>0</span> peers &nbsp;|&nbsp; <a href=/ style="color:#aaa;">status</a></span>
 </div>
 <div id=messages></div>
@@ -76,6 +77,21 @@ let socket;
 let known_peers = new Set();
 let backoff_delay = 500;
 let backoff_timer = null;
+let ws_connect_time = null;
+let ws_uptime_timer = null;
+
+function fmt_uptime(ms) {
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return s + 's';
+    const m = Math.floor(s / 60), ss = s % 60;
+    if (m < 60) return m + 'm ' + ss + 's';
+    return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
+}
+
+function update_ws_uptime() {
+    if (!ws_connect_time) return;
+    document.getElementById('ws_uptime').textContent = 'connected for ' + fmt_uptime(Date.now() - ws_connect_time);
+}
 
 const unseen_keys       = new Set();
 const seen_accum        = new Map();
@@ -730,10 +746,18 @@ function connect() {
     }
     socket.onclose = () => {
         document.getElementById('status_text').textContent = 'Disconnected -- reconnecting...';
+        ws_connect_time = null;
+        clearInterval(ws_uptime_timer);
+        ws_uptime_timer = null;
+        document.getElementById('ws_uptime').textContent = '';
         setTimeout(connect, 200);
     };
     socket.onopen = () => {
         document.getElementById('status_text').textContent = 'Connected';
+        ws_connect_time = Date.now();
+        clearInterval(ws_uptime_timer);
+        update_ws_uptime();
+        ws_uptime_timer = setInterval(update_ws_uptime, 1000);
         let work = Promise.resolve();
         socket.onmessage = async (event) => {
             work = work.then(async () => {
