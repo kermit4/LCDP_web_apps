@@ -789,7 +789,10 @@ function connect() {
                         }
                     }
                 }
-                if (chat_batch.length > 0) add_messages(chat_batch);
+                if (chat_batch.length > 0) {
+                    const added = add_messages(chat_batch);
+                    if (added.length > 0 && src) send_to_peer(src);
+                }
             });
         };
     };
