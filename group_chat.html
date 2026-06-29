@@ -8,7 +8,7 @@
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html { height: 100%; overflow: hidden; }
-body { font-family: monospace; background: #fff; color: #111; display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+body { font-family: monospace; background: #fff; color: #000; display: flex; flex-direction: column; height: 100%; overflow: hidden; }
 #topbar { padding: calc(6px + env(safe-area-inset-top, 0px)) 10px 6px 10px; background: #808080; color: #eee; font-size: 13px; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
 #messages { flex: 1; overflow-y: auto; padding: 8px 10px; }
 .msg-row { margin: 3px 0; line-height: 1.5; word-break: break-word; }
@@ -49,7 +49,7 @@ code.ic { background:#e0e0e0; padding:1px 4px; border-radius:2px; font-size:92%;
 
 <div id=topbar>
   <span>Group Chat &mdash; <b id=group_name_display>main</b></span>
-  <span id=ws_uptime style="font-size:11px;color:#bbb;"></span>
+  <span id=ws_uptime style="font-size:11px;color:#ccc;"></span>
   <span><span id=peer_count>0</span> peers &nbsp;|&nbsp; <a href=/ style="color:#aaa;">status</a></span>
 </div>
 <div id=messages></div>
