@@ -758,6 +758,7 @@ function connect() {
         clearInterval(ws_uptime_timer);
         update_ws_uptime();
         ws_uptime_timer = setInterval(update_ws_uptime, 1000);
+        schedule_backoff();
         let work = Promise.resolve();
         socket.onmessage = async (event) => {
             work = work.then(async () => {
@@ -828,7 +829,6 @@ function send_message() {
     add_messages([m]);
     input.value = '';
     send_to_all_peers();
-    schedule_backoff();
 }
 
 document.getElementById('send_btn').onclick = send_message;
