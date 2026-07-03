@@ -75,6 +75,7 @@ const LS_NICK = 'gc_nickname';
 let my_ed25519 = null;
 let socket;
 let known_peers = new Set();
+let ping_pending = false;
 let backoff_delay = 500;
 let backoff_timer = null;
 let ws_connect_time = null;
@@ -490,16 +491,23 @@ function render_messages() {
                     seen_html = '<br><b>seen by</b> ';
                     for (const p of seen) seen_html += coloredPubHtml(p) + '...' + ' ';
                 }
+                const ping_label =  '&#x1F4E1; ping &rarr;';
+                const ping_style =  'cursor:pointer;';
                 popup.innerHTML =
                     `<span class="pp-close" id="pp-close">&#x2715;</span>` +
                     `<b>ed25519</b><br>${coloredPubHtml(pub)}${pub.slice(5)}br>` +
                     seen_html + `<br>` +
+                    `<span id="pp-ping" class="pp-chat" style="${ping_style}">${ping_label}</span><br>` +
                     `<a href="chat.html?ed25519=${encodeURIComponent(pub)}" class="pp-chat" onclick="event.preventDefault();window.open(this.href,'_blank','width=1000,height=720,noopener,noreferrer')">&#x1F4AC; chat &rarr;</a>` +
                     `<br><a href="pong.html?ed25519=${encodeURIComponent(pub)}" class="pp-chat" onclick="event.preventDefault();window.open(this.href,'_blank','width=1000,height=720,noopener,noreferrer')">&#x1F3D3; pong &rarr;</a>` +
                     `<br><a href="video.html?ed25519=${encodeURIComponent(pub)}" class="pp-chat" onclick="event.preventDefault();window.open(this.href,'_blank','width=1000,height=720,noopener,noreferrer')">&#x1F4F9; video &rarr;</a>` +
                     `<br><a href="http://127.0.0.1:24255/latest/${encodeURIComponent(pub)}/" target="_blank" class="pp-chat">&#x1F3E0; home page &rarr;</a>`;
                 positionEl(popup, e.clientX, e.clientY);
                 document.getElementById('pp-close').onclick = function() { popup.style.display = 'none'; };
+                const ppPing = document.getElementById('pp-ping');
+                if (ppPing) {
+                    ppPing.onclick = function() { send_ping(pub); popup.style.display = 'none'; };
+                }
             };
         })(m.pub_key, m.timestamp);
 
@@ -576,6 +584,30 @@ function send_to_all_peers() {
     for (const peer of known_peers) {
         send_to_peer(peer);
     }
+}
+
+function send_ping(peer_pub) {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    ping_pending = true;
+    const ts = Date.now();
+    socket.send(JSON.stringify([{Forward: {to_ed25519: peer_pub, messages: [{GroupChatPing: {timestamp: ts}}]}}]));
+}
+
+function show_pong_notification(from_pub, rtt_ms) {
+    if (!ping_pending) return;
+    ping_pending = false;
+    const div = document.createElement('div');
+    div.style.cssText = 'position:fixed;bottom:70px;right:16px;background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:10px 14px;font-size:12px;font-family:monospace;box-shadow:0 4px 16px rgba(0,0,0,0.18);z-index:300;max-width:320px;';
+    const inner = document.createElement('div');
+    inner.innerHTML = `<b>pong</b> from ${coloredPubHtml(from_pub)}...<br>RTT: ${rtt_ms}ms`;
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = 'OK';
+    closeBtn.style.cssText = 'display:block;margin-top:6px;font-size:11px;padding:2px 10px;cursor:pointer;';
+    closeBtn.onclick = () => div.remove();
+    div.appendChild(inner);
+    div.appendChild(closeBtn);
+    document.body.appendChild(div);
+    setTimeout(() => { if (div.parentNode) div.remove(); }, 15000);
 }
 
 function schedule_backoff() {
@@ -800,15 +832,18 @@ function connect() {
                             if (!delivered_map.has(gcd.timestamp)) delivered_map.set(gcd.timestamp, new Set());
                             delivered_map.get(gcd.timestamp).add(src);
                         }
+                    } else if (forwarded && 'GroupChatPing' in msg) {
+                        socket.send(JSON.stringify([{Forward: {to_ed25519: src, messages: [{GroupChatPong: {timestamp: msg.GroupChatPing.timestamp}}]}}]));
+                    } else if (forwarded && 'GroupChatPong' in msg) {
+                        show_pong_notification(src, Date.now() - msg.GroupChatPong.timestamp);
                     }
                 }
                 if (chat_batch.length > 0) {
                     const added = add_messages(chat_batch);
                     if (added.length > 0 && src) {
                         send_to_peer(src);
-                        const to_ack = added.filter(m => m.pub_key !== my_ed25519);
-                        if (to_ack.length > 0 && my_ed25519) {
-                            const receipts = to_ack.map(m => ({GroupChatDelivered: {group_name: GROUP_NAME, timestamp: m.timestamp}}));
+                        if (my_ed25519) {
+                            const receipts = added.map(m => ({GroupChatDelivered: {group_name: GROUP_NAME, timestamp: m.timestamp}}));
                             socket.send(JSON.stringify([{Forward: {to_ed25519: src, messages: receipts}}]));
                         }
                     }
