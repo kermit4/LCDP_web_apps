@@ -163,6 +163,46 @@ body {
   .chirp-handle { display: none; }
   #chirp-input { font-size: 16px; }
 }
+
+#img-preview-box {
+  margin-top: 8px;
+  display: none;
+  position: relative;
+  width: fit-content;
+  max-width: 280px;
+}
+#img-preview {
+  max-width: 280px;
+  max-height: 160px;
+  border-radius: 10px;
+  border: 1px solid #e1e8ed;
+  display: block;
+}
+#img-remove {
+  position: absolute;
+  top: 5px; right: 5px;
+  background: rgba(0,0,0,0.55); color: #fff;
+  border: none; cursor: pointer; border-radius: 50%;
+  width: 22px; height: 22px; font-size: 13px;
+  display: flex; align-items: center; justify-content: center; padding: 0;
+}
+#img-upload-status { font-size: 11px; color: #657786; margin-top: 3px; }
+.img-attach-label {
+  cursor: pointer; font-size: 20px; line-height: 1;
+  color: #aab8c2; flex-shrink: 0;
+  transition: color 0.12s;
+}
+.img-attach-label:hover { color: #1da1f2; }
+.chirp-img {
+  display: block;
+  margin-top: 10px;
+  max-width: 100%;
+  max-height: 300px;
+  border-radius: 14px;
+  border: 1px solid #e1e8ed;
+  cursor: pointer;
+}
+.chirp-img:hover { opacity: 0.9; }
 </style>
 </head>
 <body>
@@ -198,7 +238,14 @@ body {
         </div>
         <div id="reply-preview"></div>
         <textarea id="chirp-input" placeholder="What&#39;s chirping?" maxlength="280" disabled></textarea>
+        <div id="img-preview-box">
+          <img id="img-preview" alt="preview">
+          <button id="img-remove" title="Remove image">&#x2715;</button>
+          <div id="img-upload-status"></div>
+        </div>
         <div id="compose-footer">
+          <input type="file" id="img-file-input" accept="image/*" style="display:none">
+          <label for="img-file-input" class="img-attach-label" title="Attach image">&#128247;</label>
           <span id="char-count">280</span>
           <button id="chirp-btn" disabled>Chirp</button>
         </div>
@@ -219,6 +266,8 @@ body {
 <script>
 const LS_KEY = 'chirp_v1';
 const MAX_STORED = 500;
+const PORT = location.port || 24255;
+const BASE = `${location.protocol}//${location.hostname}:${PORT}`;
 
 let my_pub = null;
 let known_peers = new Set();
@@ -227,6 +276,8 @@ let filter_pub = null;
 let reply_to = null;   // {pub, ts}
 let backoff_timer = null;
 let backoff_ms = 500;
+let pending_image_hash = null;
+let pending_image_uploading = false;
 
 // ---- storage ----
 function load() {
@@ -403,6 +454,16 @@ function make_card(c, by_key) {
   linkify(txt, c.text);
   body.appendChild(txt);
 
+  // image
+  if (c.image_hash) {
+    const img = document.createElement('img');
+    img.className = 'chirp-img';
+    img.src = BASE + '/blake3/' + c.image_hash;
+    img.alt = 'image';
+    img.onclick = () => window.open(BASE + '/blake3/' + c.image_hash, '_blank');
+    body.appendChild(img);
+  }
+
   // actions
   const acts = document.createElement('div');
   acts.className = 'chirp-actions';
@@ -464,6 +525,7 @@ function rechirp(c) {
     text: c.text,
     reply_pub: null,
     reply_ts: null,
+    image_hash: c.image_hash || null,
   };
   ingest([rc]);
   blast_peers();
@@ -490,32 +552,100 @@ const input_el = document.getElementById('chirp-input');
 const count_el = document.getElementById('char-count');
 const btn_el   = document.getElementById('chirp-btn');
 
+function update_btn_state() {
+  btn_el.disabled = !my_pub || pending_image_uploading ||
+    (!input_el.value.trim() && !pending_image_hash);
+}
+
 input_el.addEventListener('input', () => {
   const rem = 280 - input_el.value.length;
   count_el.textContent = rem;
   count_el.className = rem < 20 ? 'warn' : '';
-  btn_el.disabled = !my_pub || !input_el.value.trim();
+  update_btn_state();
 });
 input_el.addEventListener('keydown', e => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); post(); }
 });
 btn_el.onclick = post;
 
+// ---- image attach ----
+function upload_chirp_image(file) {
+  pending_image_uploading = true;
+  pending_image_hash = null;
+  document.getElementById('img-upload-status').textContent = 'uploading…';
+  update_btn_state();
+  const xhr = new XMLHttpRequest();
+  xhr.upload.addEventListener('progress', e => {
+    if (!e.lengthComputable) return;
+    document.getElementById('img-upload-status').textContent =
+      'uploading… ' + (e.loaded / e.total * 100).toFixed(0) + '%';
+  });
+  xhr.addEventListener('load', () => {
+    pending_image_uploading = false;
+    if (xhr.status === 200) {
+      try {
+        const r = JSON.parse(xhr.responseText);
+        pending_image_hash = r.blake3 || null;
+        document.getElementById('img-upload-status').textContent =
+          pending_image_hash ? 'ready to send' : 'upload error';
+      } catch(e) {
+        document.getElementById('img-upload-status').textContent = 'parse error';
+      }
+    } else {
+      document.getElementById('img-upload-status').textContent = 'upload failed';
+    }
+    update_btn_state();
+  });
+  xhr.addEventListener('error', () => {
+    pending_image_uploading = false;
+    document.getElementById('img-upload-status').textContent = 'network error';
+    update_btn_state();
+  });
+  xhr.open('POST', '/upload');
+  xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+  xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
+  xhr.send(file);
+}
+
+function clear_chirp_image() {
+  pending_image_hash = null;
+  pending_image_uploading = false;
+  document.getElementById('img-preview-box').style.display = 'none';
+  document.getElementById('img-preview').src = '';
+  document.getElementById('img-upload-status').textContent = '';
+  update_btn_state();
+}
+
+document.getElementById('img-file-input').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = '';
+  const prev = document.getElementById('img-preview');
+  const obj = URL.createObjectURL(file);
+  prev.src = obj;
+  prev.onload = () => URL.revokeObjectURL(obj);
+  document.getElementById('img-preview-box').style.display = 'block';
+  upload_chirp_image(file);
+});
+
+document.getElementById('img-remove').addEventListener('click', clear_chirp_image);
+
 function post() {
   const text = input_el.value.trim();
-  if (!text || !my_pub) return;
+  if (!my_pub || pending_image_uploading || (!text && !pending_image_hash)) return;
   const c = {
     pub: my_pub,
     ts: Date.now(),
-    text,
+    text: text || '',
     reply_pub: reply_to ? reply_to.pub : null,
     reply_ts:  reply_to ? reply_to.ts  : null,
+    image_hash: pending_image_hash || null,
   };
   ingest([c]);
   input_el.value = '';
   count_el.textContent = '280';
-  btn_el.disabled = true;
   cancelReply();
+  clear_chirp_image();
   blast_peers();
   arm_backoff();
 }
@@ -524,16 +654,18 @@ function post() {
 function encode(c) {
   const m = { ts: c.ts, text: c.text };
   if (c.reply_pub && c.reply_ts) { m.reply_pub = c.reply_pub; m.reply_ts = c.reply_ts; }
+  if (c.image_hash) m.image_hash = c.image_hash;
   return { ChirpMessage: m };
 }
 
 function decode(pub, m) {
   return {
     pub,
-    ts:        m.ts,
-    text:      m.text,
-    reply_pub: m.reply_pub || null,
-    reply_ts:  m.reply_ts  || null,
+    ts:         m.ts,
+    text:       m.text,
+    reply_pub:  m.reply_pub  || null,
+    reply_ts:   m.reply_ts   || null,
+    image_hash: m.image_hash || null,
   };
 }
 
@@ -622,7 +754,7 @@ async function poll_status() {
       document.getElementById('my-pub-display').textContent = 'me: @' + short(my_pub) + '…';
       document.getElementById('my-pub-display').title = my_pub;
       input_el.disabled = false;
-      btn_el.disabled = !input_el.value.trim();
+      update_btn_state();
       render();
     }
     const peers = (d.active_peers || []).map(p => strip0x(p.pub));

@@ -43,6 +43,33 @@ code.ic { background:#e0e0e0; padding:1px 4px; border-radius:2px; font-size:92%;
 .pp-chat { color: #0055cc; font-family: sans-serif; font-weight: 600; text-decoration: none; }
 .pp-chat:hover { text-decoration: underline; }
 .pub-key-btn { cursor:pointer; }
+#img-attach-bar {
+  display: none;
+  background: #e8e8e8;
+  border-top: 1px solid #bbb;
+  padding: 5px 8px;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+#gc-img-preview { max-height: 72px; max-width: 100px; border-radius: 4px; border: 1px solid #bbb; }
+#gc-img-remove { background: none; border: none; cursor: pointer; color: #666; font-size: 18px; padding: 0 2px; line-height: 1; }
+#gc-img-status { font-size: 11px; color: #555; }
+.gc-img-btn {
+  padding: 6px 9px; background: #e0e0e0; color: #3a7bd5; border: 1px solid #bbb;
+  border-radius: 3px; cursor: pointer; font-size: 16px; flex-shrink: 0; line-height: 1;
+}
+.gc-img-btn:hover { background: #d0d0d0; }
+.msg-img {
+  display: block;
+  max-width: min(300px, 100%);
+  max-height: 220px;
+  border-radius: 6px;
+  border: 1px solid #ddd;
+  margin: 4px 0 2px 0;
+  cursor: pointer;
+}
+.msg-img:hover { opacity: 0.88; }
 </style>
 </head>
 <body>
@@ -54,6 +81,11 @@ code.ic { background:#e0e0e0; padding:1px 4px; border-radius:2px; font-size:92%;
 </div>
 <div id=messages></div>
 <div id="peer-popup"></div>
+<div id="img-attach-bar">
+  <img id="gc-img-preview" alt="preview">
+  <span id="gc-img-status"></span>
+  <button id="gc-img-remove" title="Remove image">&#x2715;</button>
+</div>
 <div id=statusbar>
   <span id=status_text>connecting...</span>
   &nbsp;&nbsp;me: <span id=my_pub_display title="">...</span>
@@ -63,6 +95,8 @@ code.ic { background:#e0e0e0; padding:1px 4px; border-radius:2px; font-size:92%;
   &nbsp;&nbsp;<span style="color:#999;font-size:10px;" title="Wrap code in triple backticks:&#10;&#96;&#96;&#96;rust&#10;fn main() {}&#10;&#96;&#96;&#96;&#10;Language optional — auto-detected if omitted.&#10;Inline: &#96;code&#96;">&#96;&#96;&#96;lang for code</span>
 </div>
 <div id=inputbar>
+  <input type="file" id="gc-img-input" accept="image/*" style="display:none">
+  <label for="gc-img-input" class="gc-img-btn" title="Attach image">&#128247;</label>
   <textarea id=msg_input placeholder="Type a message -- Ctrl+Enter to send, Enter for newline" disabled></textarea>
   <button id=send_btn disabled>Send</button>
 </div>
@@ -73,10 +107,15 @@ const LS_KEY = 'gc_messages_' + GROUP_NAME;
 const LS_NICK = 'gc_nickname';
 const LS_DELIVERED = 'gc_delivered_' + GROUP_NAME;
 
+const GC_PORT = location.port || 24255;
+const GC_BASE = `${location.protocol}//${location.hostname}:${GC_PORT}`;
+
 let my_ed25519 = null;
 let socket;
 let known_peers = new Set();
 let ping_pending = false;
+let gc_pending_image_hash = null;
+let gc_pending_image_uploading = false;
 let popup_refresh_delivered = null; // set while popup is open; called when delivered_map updates
 let backoff_delay = 500;
 let backoff_timer = null;
@@ -550,6 +589,14 @@ function render_messages() {
         } else {
             render_message_text(row, m.text);
         }
+        if (m.image_hash) {
+            const img = document.createElement('img');
+            img.className = 'msg-img';
+            img.src = GC_BASE + '/blake3/' + m.image_hash;
+            img.alt = 'image';
+            img.onclick = () => window.open(GC_BASE + '/blake3/' + m.image_hash, '_blank');
+            row.appendChild(img);
+        }
         const k = m.pub_key + ':' + m.timestamp;
         if (unseen_keys.has(k)) {
             row.dataset.msgKey = k;
@@ -585,6 +632,7 @@ function send_to_peer(peer_pub) {
         const gcm = { group_name: m.group_name, text: m.text, timestamp: m.timestamp };
         if (m.action) gcm.action = m.action;
         if (m.nickname) gcm.nickname = m.nickname;
+        if (m.image_hash) gcm.image_hash = m.image_hash;
         return {GroupChatMessage: gcm};
     };
     const make_payload = batch => JSON.stringify([{Forward:{
@@ -848,6 +896,7 @@ function connect() {
                         const entry = { pub_key: src, text: gcm.text, timestamp: gcm.timestamp, group_name: gcm.group_name };
                         if (gcm.action) entry.action = gcm.action;
                         if (gcm.nickname) entry.nickname = gcm.nickname;
+                        if (gcm.image_hash) entry.image_hash = gcm.image_hash;
                         chat_msgs.push(entry);
                     }
                 } else if (forwarded && 'GroupChatDelivered' in msg) {
@@ -899,7 +948,8 @@ const IRC_SHORTHANDS = {
 function send_message() {
     const input = document.getElementById('msg_input');
     const raw = input.value.trim();
-    if (!raw) return;
+    if (!raw && !gc_pending_image_hash) return;
+    if (gc_pending_image_uploading) return;
     let text = raw, action = null;
     if (raw.startsWith('/me ') && raw.length > 4) {
         action = raw.slice(4);
@@ -912,8 +962,10 @@ function send_message() {
     if (action) m.action = action;
     const nick = nick_input.value.trim();
     if (nick) m.nickname = nick;
+    if (gc_pending_image_hash) m.image_hash = gc_pending_image_hash;
     add_messages([m]);
     input.value = '';
+    gc_clear_image();
     send_to_all_peers();
 }
 
@@ -921,6 +973,64 @@ document.getElementById('send_btn').onclick = send_message;
 document.getElementById('msg_input').addEventListener('keydown', e => {
     if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); send_message(); }
 });
+
+// ---- image attach ----
+function gc_upload_image(file) {
+    gc_pending_image_uploading = true;
+    gc_pending_image_hash = null;
+    document.getElementById('gc-img-status').textContent = 'uploading…';
+    const xhr = new XMLHttpRequest();
+    xhr.upload.addEventListener('progress', e => {
+        if (!e.lengthComputable) return;
+        document.getElementById('gc-img-status').textContent =
+            (e.loaded / e.total * 100).toFixed(0) + '%';
+    });
+    xhr.addEventListener('load', () => {
+        gc_pending_image_uploading = false;
+        if (xhr.status === 200) {
+            try {
+                const r = JSON.parse(xhr.responseText);
+                gc_pending_image_hash = r.blake3 || null;
+                document.getElementById('gc-img-status').textContent =
+                    gc_pending_image_hash ? 'ready' : 'upload error';
+            } catch(e) {
+                document.getElementById('gc-img-status').textContent = 'parse error';
+            }
+        } else {
+            document.getElementById('gc-img-status').textContent = 'failed';
+        }
+    });
+    xhr.addEventListener('error', () => {
+        gc_pending_image_uploading = false;
+        document.getElementById('gc-img-status').textContent = 'network error';
+    });
+    xhr.open('POST', '/upload');
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
+    xhr.send(file);
+}
+
+function gc_clear_image() {
+    gc_pending_image_hash = null;
+    gc_pending_image_uploading = false;
+    document.getElementById('img-attach-bar').style.display = 'none';
+    document.getElementById('gc-img-preview').src = '';
+    document.getElementById('gc-img-status').textContent = '';
+}
+
+document.getElementById('gc-img-input').addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    e.target.value = '';
+    const prev = document.getElementById('gc-img-preview');
+    const obj = URL.createObjectURL(file);
+    prev.src = obj;
+    prev.onload = () => URL.revokeObjectURL(obj);
+    document.getElementById('img-attach-bar').style.display = 'flex';
+    gc_upload_image(file);
+});
+
+document.getElementById('gc-img-remove').addEventListener('click', gc_clear_image);
 
 // Register service worker for browser notifications (bypasses Chromium's suppression
 // of new Notification() when the browser window has focus in another tab).
