@@ -71,11 +71,13 @@ code.ic { background:#e0e0e0; padding:1px 4px; border-radius:2px; font-size:92%;
 const GROUP_NAME = 'main';
 const LS_KEY = 'gc_messages_' + GROUP_NAME;
 const LS_NICK = 'gc_nickname';
+const LS_DELIVERED = 'gc_delivered_' + GROUP_NAME;
 
 let my_ed25519 = null;
 let socket;
 let known_peers = new Set();
 let ping_pending = false;
+let popup_refresh_delivered = null; // set while popup is open; called when delivered_map updates
 let backoff_delay = 500;
 let backoff_timer = null;
 let ws_connect_time = null;
@@ -99,6 +101,7 @@ const seen_accum        = new Map();
 const unseen_els        = new Map();
 const pending_notif_tags = new Set();
 const delivered_map     = new Map(); // timestamp -> Set<pub_key> of who sent delivery receipts
+const undelivered_els   = new Map(); // timestamp -> row element for my undelivered messages
 let   visible_keys = new Set();
 let   seen_ticker  = null;
 let   unseen_io    = null;
@@ -111,6 +114,19 @@ function load_messages() {
 
 function save_messages(msgs) {
     localStorage.setItem(LS_KEY, JSON.stringify(msgs));
+}
+
+function load_delivered() {
+    try {
+        const raw = JSON.parse(localStorage.getItem(LS_DELIVERED) || '[]');
+        for (const [ts, pubs] of raw) delivered_map.set(ts, new Set(pubs));
+    } catch(e) {}
+}
+
+function save_delivered() {
+    const raw = [];
+    for (const [ts, pubs] of delivered_map) raw.push([ts, [...pubs]]);
+    localStorage.setItem(LS_DELIVERED, JSON.stringify(raw));
 }
 
 // Returns array of newly added messages (empty if all already known)
@@ -467,6 +483,7 @@ function render_messages() {
     const at_bottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 30;
     container.innerHTML = '';
     unseen_els.clear();
+    undelivered_els.clear();
     for (const m of msgs) {
         const row = document.createElement('div');
         row.className = 'msg-row';
@@ -485,29 +502,33 @@ function render_messages() {
             key_link.onclick = function(e) {
                 e.stopPropagation();
                 const popup = document.getElementById('peer-popup');
-                const seen = delivered_map.get(ts);
-                let seen_html = '';
-                if (seen && seen.size > 0) {
-                    seen_html = '<br><b>seen by</b> ';
-                    for (const p of seen) seen_html += coloredPubHtml(p) + '...' + ' ';
+                function build_delivered_html() {
+                    const dl = delivered_map.get(ts);
+                    if (!dl || dl.size === 0) return '';
+                    let h = '<b>delivered to</b> ';
+                    for (const p of dl) h += coloredPubHtml(p) + '... ';
+                    return h + '<br>';
                 }
-                const ping_label =  '&#x1F4E1; ping &rarr;';
-                const ping_style =  'cursor:pointer;';
                 popup.innerHTML =
                     `<span class="pp-close" id="pp-close">&#x2715;</span>` +
-                    `<b>ed25519</b><br>${coloredPubHtml(pub)}${pub.slice(5)}br>` +
-                    seen_html + `<br>` +
-                    `<span id="pp-ping" class="pp-chat" style="${ping_style}">${ping_label}</span><br>` +
+                    `<b>ed25519</b><br>${coloredPubHtml(pub)}${pub.slice(5)}<br>` +
+                    `<span id="pp-delivered"></span>` +
+                    `<span id="pp-ping" class="pp-chat" style="cursor:pointer;">&#x1F4E1; ping &rarr;</span><br>` +
                     `<a href="chat.html?ed25519=${encodeURIComponent(pub)}" class="pp-chat" onclick="event.preventDefault();window.open(this.href,'_blank','width=1000,height=720,noopener,noreferrer')">&#x1F4AC; chat &rarr;</a>` +
                     `<br><a href="pong.html?ed25519=${encodeURIComponent(pub)}" class="pp-chat" onclick="event.preventDefault();window.open(this.href,'_blank','width=1000,height=720,noopener,noreferrer')">&#x1F3D3; pong &rarr;</a>` +
                     `<br><a href="video.html?ed25519=${encodeURIComponent(pub)}" class="pp-chat" onclick="event.preventDefault();window.open(this.href,'_blank','width=1000,height=720,noopener,noreferrer')">&#x1F4F9; video &rarr;</a>` +
                     `<br><a href="http://127.0.0.1:24255/latest/${encodeURIComponent(pub)}/" target="_blank" class="pp-chat">&#x1F3E0; home page &rarr;</a>`;
+                document.getElementById('pp-delivered').innerHTML = build_delivered_html();
                 positionEl(popup, e.clientX, e.clientY);
-                document.getElementById('pp-close').onclick = function() { popup.style.display = 'none'; };
-                const ppPing = document.getElementById('pp-ping');
-                if (ppPing) {
-                    ppPing.onclick = function() { send_ping(pub); popup.style.display = 'none'; };
-                }
+                popup_refresh_delivered = () => {
+                    const el = document.getElementById('pp-delivered');
+                    if (el) el.innerHTML = build_delivered_html();
+                };
+                document.getElementById('pp-close').onclick = function() {
+                    popup.style.display = 'none';
+                    popup_refresh_delivered = null;
+                };
+                document.getElementById('pp-ping').onclick = function() { send_ping(pub); popup.style.display = 'none'; };
             };
         })(m.pub_key, m.timestamp);
 
@@ -534,6 +555,16 @@ function render_messages() {
             row.dataset.msgKey = k;
             apply_hl(row, 1 - (seen_accum.get(k) || 0) / 10000);
             unseen_els.set(k, row);
+        }
+        if (m.pub_key === my_ed25519) {
+            const dl = delivered_map.get(m.timestamp);
+            if (!dl || dl.size === 0) {
+                const mark = document.createElement('span');
+                mark.textContent = '*';
+                mark.style.cssText = 'color:#c00;font-weight:normal;margin-left:3px;';
+                meta.appendChild(mark);
+                undelivered_els.set(m.timestamp, mark);
+            }
         }
         container.appendChild(row);
     }
@@ -664,7 +695,7 @@ window.addEventListener('blur',  () => { win_focused = false; });
 
 document.addEventListener('click', e => {
     const popup = document.getElementById('peer-popup');
-    if (popup && !popup.contains(e.target)) popup.style.display = 'none';
+    if (popup && !popup.contains(e.target)) { popup.style.display = 'none'; popup_refresh_delivered = null; }
 });
 
 // Tauri IPC -- present on Android (Tauri APK), null in a plain browser.
@@ -798,57 +829,53 @@ function connect() {
         update_ws_uptime();
         ws_uptime_timer = setInterval(update_ws_uptime, 1000);
         schedule_backoff();
-        let work = Promise.resolve();
-        socket.onmessage = async (event) => {
-            work = work.then(async () => {
-                let outer;
-                try { outer = JSON.parse(event.data); } catch(e) { return; }
-                let messages, forwarded = false, src = null;
-                if (outer[0] && 'Forwarded' in outer[0]) {
-                    src = strip_0x(outer[0].Forwarded.from_ed25519);
-                    forwarded = true;
-                    try { messages = JSON.parse(outer[0].Forwarded.messages); } catch(e) { return; }
-                } else {
-                    messages = outer;
-                }
-                const chat_batch = [];
-                for (const msg of messages) {
-                    if (forwarded && 'GroupChatMessage' in msg) {
-                        const gcm = msg.GroupChatMessage;
-                        if (gcm.group_name === GROUP_NAME) {
-                            const entry = {
-                                pub_key: src,
-                                text: gcm.text,
-                                timestamp: gcm.timestamp,
-                                group_name: gcm.group_name
-                            };
-                            if (gcm.action) entry.action = gcm.action;
-                            if (gcm.nickname) entry.nickname = gcm.nickname;
-                            chat_batch.push(entry);
-                        }
-                    } else if (forwarded && 'GroupChatDelivered' in msg) {
-                        const gcd = msg.GroupChatDelivered;
-                        if (gcd.group_name === GROUP_NAME) {
-                            if (!delivered_map.has(gcd.timestamp)) delivered_map.set(gcd.timestamp, new Set());
-                            delivered_map.get(gcd.timestamp).add(src);
-                        }
-                    } else if (forwarded && 'GroupChatPing' in msg) {
-                        socket.send(JSON.stringify([{Forward: {to_ed25519: src, messages: [{GroupChatPong: {timestamp: msg.GroupChatPing.timestamp}}]}}]));
-                    } else if (forwarded && 'GroupChatPong' in msg) {
-                        show_pong_notification(src, Date.now() - msg.GroupChatPong.timestamp);
+        socket.onmessage = (event) => {
+            let outer;
+            try { outer = JSON.parse(event.data); } catch(e) { return; }
+            let messages, forwarded = false, src = null;
+            if (outer[0] && 'Forwarded' in outer[0]) {
+                src = strip_0x(outer[0].Forwarded.from_ed25519);
+                forwarded = true;
+                try { messages = JSON.parse(outer[0].Forwarded.messages); } catch(e) { return; }
+            } else {
+                messages = outer;
+            }
+            const chat_msgs = [];
+            for (const msg of messages) {
+                if (forwarded && 'GroupChatMessage' in msg) {
+                    const gcm = msg.GroupChatMessage;
+                    if (gcm.group_name === GROUP_NAME) {
+                        const entry = { pub_key: src, text: gcm.text, timestamp: gcm.timestamp, group_name: gcm.group_name };
+                        if (gcm.action) entry.action = gcm.action;
+                        if (gcm.nickname) entry.nickname = gcm.nickname;
+                        chat_msgs.push(entry);
                     }
-                }
-                if (chat_batch.length > 0) {
-                    const added = add_messages(chat_batch);
-                    if (added.length > 0 && src) {
-                        send_to_peer(src);
-                        if (my_ed25519) {
-                            const receipts = added.map(m => ({GroupChatDelivered: {group_name: GROUP_NAME, timestamp: m.timestamp}}));
-                            socket.send(JSON.stringify([{Forward: {to_ed25519: src, messages: receipts}}]));
-                        }
+                } else if (forwarded && 'GroupChatDelivered' in msg) {
+                    const gcd = msg.GroupChatDelivered;
+                    if (gcd.group_name === GROUP_NAME) {
+                        if (!delivered_map.has(gcd.timestamp)) delivered_map.set(gcd.timestamp, new Set());
+                        delivered_map.get(gcd.timestamp).add(src);
+                        save_delivered();
+                        if (popup_refresh_delivered) popup_refresh_delivered();
+                        const uel = undelivered_els.get(gcd.timestamp);
+                        if (uel) { uel.remove(); undelivered_els.delete(gcd.timestamp); }
                     }
+                } else if (forwarded && 'GroupChatPing' in msg) {
+                    socket.send(JSON.stringify([{Forward: {to_ed25519: src, messages: [{GroupChatPong: {timestamp: msg.GroupChatPing.timestamp}}]}}]));
+                } else if (forwarded && 'GroupChatPong' in msg) {
+                    show_pong_notification(src, Date.now() - msg.GroupChatPong.timestamp);
                 }
-            });
+            }
+            if (chat_msgs.length > 0) {
+                const added = add_messages(chat_msgs);
+                if (added.length > 0 && src) {
+                    if (my_ed25519) {
+                        const receipts = added.map(m => ({GroupChatDelivered: {group_name: GROUP_NAME, timestamp: m.timestamp}}));
+                        socket.send(JSON.stringify([{Forward: {to_ed25519: src, messages: receipts}}]));
+                    }
+                    send_to_peer(src);
+                }
+            }
         };
     };
 }
@@ -906,6 +933,7 @@ nick_input.value = localStorage.getItem(LS_NICK) || '';
 nick_input.addEventListener('input', () => localStorage.setItem(LS_NICK, nick_input.value.trim()));
 
 // Init: render stored messages immediately, then connect and start retransmit loop
+load_delivered();
 render_messages();
 connect();
 schedule_backoff();
