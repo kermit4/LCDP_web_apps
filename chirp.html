@@ -413,6 +413,13 @@ function make_card(c, by_key) {
   reply_btn.onclick = () => start_reply(c);
   acts.appendChild(reply_btn);
 
+  const rechirp_btn = document.createElement('button');
+  rechirp_btn.className = 'act-btn';
+  rechirp_btn.innerHTML = '&#128257; Rechirp';
+  rechirp_btn.disabled = !my_pub;
+  rechirp_btn.onclick = () => rechirp(c);
+  acts.appendChild(rechirp_btn);
+
   body.appendChild(acts);
   card.appendChild(body);
   return card;
@@ -447,6 +454,20 @@ function cancelReply() {
   reply_to = null;
   document.getElementById('reply-indicator').style.display = 'none';
   document.getElementById('reply-preview').style.display = 'none';
+}
+
+function rechirp(c) {
+  if (!my_pub) return;
+  const rc = {
+    pub: my_pub,
+    ts: Date.now(),
+    text: c.text,
+    reply_pub: null,
+    reply_ts: null,
+  };
+  ingest([rc]);
+  blast_peers();
+  arm_backoff();
 }
 
 function scrollToChirp(pub, ts) {
