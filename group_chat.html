@@ -97,6 +97,7 @@ const unseen_keys       = new Set();
 const seen_accum        = new Map();
 const unseen_els        = new Map();
 const pending_notif_tags = new Set();
+const delivered_map     = new Map(); // timestamp -> Set<pub_key> of who sent delivery receipts
 let   visible_keys = new Set();
 let   seen_ticker  = null;
 let   unseen_io    = null;
@@ -171,7 +172,6 @@ function coloredPubHtml(pub) {
             html += `<span style="color:${color}">${pub[i]}</span>`;
         }
     }
-    html += pub.slice(5);
     return html;
 }
 
@@ -480,13 +480,20 @@ function render_messages() {
         key_link.className = 'pub-key-btn';
         key_link.title = m.pub_key;
         key_link.appendChild(colored_pub_prefix(m.pub_key));
-        (function(pub) {
+        (function(pub, ts) {
             key_link.onclick = function(e) {
                 e.stopPropagation();
                 const popup = document.getElementById('peer-popup');
+                const seen = delivered_map.get(ts);
+                let seen_html = '';
+                if (seen && seen.size > 0) {
+                    seen_html = '<br><b>seen by</b> ';
+                    for (const p of seen) seen_html += coloredPubHtml(p) + '...' + ' ';
+                }
                 popup.innerHTML =
                     `<span class="pp-close" id="pp-close">&#x2715;</span>` +
-                    `<b>ed25519</b><br>${coloredPubHtml(pub)}<br><br>` +
+                    `<b>ed25519</b><br>${coloredPubHtml(pub)}${pub.slice(5)}br>` +
+                    seen_html + `<br>` +
                     `<a href="chat.html?ed25519=${encodeURIComponent(pub)}" class="pp-chat" onclick="event.preventDefault();window.open(this.href,'_blank','width=1000,height=720,noopener,noreferrer')">&#x1F4AC; chat &rarr;</a>` +
                     `<br><a href="pong.html?ed25519=${encodeURIComponent(pub)}" class="pp-chat" onclick="event.preventDefault();window.open(this.href,'_blank','width=1000,height=720,noopener,noreferrer')">&#x1F3D3; pong &rarr;</a>` +
                     `<br><a href="video.html?ed25519=${encodeURIComponent(pub)}" class="pp-chat" onclick="event.preventDefault();window.open(this.href,'_blank','width=1000,height=720,noopener,noreferrer')">&#x1F4F9; video &rarr;</a>` +
@@ -494,7 +501,7 @@ function render_messages() {
                 positionEl(popup, e.clientX, e.clientY);
                 document.getElementById('pp-close').onclick = function() { popup.style.display = 'none'; };
             };
-        })(m.pub_key);
+        })(m.pub_key, m.timestamp);
 
         meta.appendChild(ts_span);
         meta.appendChild(key_link);
@@ -787,11 +794,24 @@ function connect() {
                             if (gcm.nickname) entry.nickname = gcm.nickname;
                             chat_batch.push(entry);
                         }
+                    } else if (forwarded && 'GroupChatDelivered' in msg) {
+                        const gcd = msg.GroupChatDelivered;
+                        if (gcd.group_name === GROUP_NAME) {
+                            if (!delivered_map.has(gcd.timestamp)) delivered_map.set(gcd.timestamp, new Set());
+                            delivered_map.get(gcd.timestamp).add(src);
+                        }
                     }
                 }
                 if (chat_batch.length > 0) {
                     const added = add_messages(chat_batch);
-                    if (added.length > 0 && src) send_to_peer(src);
+                    if (added.length > 0 && src) {
+                        send_to_peer(src);
+                        const to_ack = added.filter(m => m.pub_key !== my_ed25519);
+                        if (to_ack.length > 0 && my_ed25519) {
+                            const receipts = to_ack.map(m => ({GroupChatDelivered: {group_name: GROUP_NAME, timestamp: m.timestamp}}));
+                            socket.send(JSON.stringify([{Forward: {to_ed25519: src, messages: receipts}}]));
+                        }
+                    }
                 }
             });
         };
