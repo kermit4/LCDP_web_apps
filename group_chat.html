@@ -862,6 +862,7 @@ function connect() {
                     }
                 } else if (forwarded && 'GroupChatPing' in msg) {
                     socket.send(JSON.stringify([{Forward: {to_ed25519: src, messages: [{GroupChatPong: {timestamp: msg.GroupChatPing.timestamp}}]}}]));
+                    send_to_peer(src);
                 } else if (forwarded && 'GroupChatPong' in msg) {
                     show_pong_notification(src, Date.now() - msg.GroupChatPong.timestamp);
                 }
