@@ -605,13 +605,12 @@ function render_messages() {
         }
         if (m.pub_key === my_ed25519) {
             const dl = delivered_map.get(m.timestamp);
-            if (!dl || dl.size === 0) {
-                const mark = document.createElement('span');
-                mark.textContent = '*';
-                mark.style.cssText = 'color:#c00;font-weight:normal;margin-left:3px;';
-                meta.appendChild(mark);
-                undelivered_els.set(m.timestamp, mark);
-            }
+            const count = dl ? dl.size : 0;
+            const mark = document.createElement('span');
+            mark.textContent = String(count);
+            mark.style.cssText = `color:#fff;font-weight:normal;margin-left:3px;padding:0 3px;border-radius:3px;background:${count === 0 ? '#c00' : '#3a3'};`;
+            meta.appendChild(mark);
+            undelivered_els.set(m.timestamp, mark);
         }
         container.appendChild(row);
     }
@@ -907,7 +906,11 @@ function connect() {
                         save_delivered();
                         if (popup_refresh_delivered) popup_refresh_delivered();
                         const uel = undelivered_els.get(gcd.timestamp);
-                        if (uel) { uel.remove(); undelivered_els.delete(gcd.timestamp); }
+                        if (uel) {
+                            const count = delivered_map.get(gcd.timestamp).size;
+                            uel.textContent = String(count);
+                            uel.style.background = count === 0 ? '#c00' : '#3a3';
+                        }
                     }
                 } else if (forwarded && 'GroupChatPing' in msg) {
                     socket.send(JSON.stringify([{Forward: {to_ed25519: src, messages: [{GroupChatPong: {timestamp: msg.GroupChatPing.timestamp}}]}}]));
