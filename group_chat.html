@@ -79,6 +79,15 @@ code.ic { background:#e0e0e0; padding:1px 4px; border-radius:2px; font-size:92%;
   margin: 4px 0 2px 0;
 }
 #gc-video-preview { max-height: 72px; max-width: 100px; border-radius: 4px; border: 1px solid #bbb; display: none; }
+.msg-reply-btn { font-size: 10px; color: #aaa; cursor: pointer; margin-left: 6px; padding: 1px 3px; border-radius: 2px; user-select: none; font-weight: normal; }
+.msg-reply-btn:hover { color: #333; background: #eee; }
+.reply-quote { display: block; margin: 1px 0 2px 2px; padding: 1px 7px; border-left: 3px solid #b0b0b0; background: #f5f5f5; font-size: 11px; cursor: pointer; border-radius: 0 2px 2px 0; max-width: min(420px, 96vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: normal; color: #444; }
+.reply-quote:hover { background: #e8e8e8; border-left-color: #3a7bd5; }
+.reply-expand { display: block; margin: 2px 0 2px 10px; padding: 4px 8px; border-left: 2px solid #ccc; background: #fafafa; font-size: 12px; white-space: pre-wrap; }
+#reply-bar { display: none; background: #ebebf0; border-top: 1px solid #bbb; padding: 4px 8px; align-items: center; gap: 8px; flex-shrink: 0; font-size: 11px; font-family: monospace; }
+#reply-bar-content { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #444; }
+#reply-cancel { background: none; border: none; cursor: pointer; color: #888; font-size: 16px; padding: 0 2px; line-height: 1; }
+#reply-cancel:hover { color: #333; }
 </style>
 </head>
 <body>
@@ -95,6 +104,10 @@ code.ic { background:#e0e0e0; padding:1px 4px; border-radius:2px; font-size:92%;
   <video id="gc-video-preview" controls muted></video>
   <span id="gc-img-status"></span>
   <button id="gc-img-remove" title="Remove image">&#x2715;</button>
+</div>
+<div id="reply-bar">
+  <span id="reply-bar-content"></span>
+  <button id="reply-cancel" title="Cancel reply">&#x2715;</button>
 </div>
 <div id=statusbar>
   <span id=status_text>connecting...</span>
@@ -129,6 +142,7 @@ let gc_pending_image_hash = null;
 let gc_pending_image_uploading = false;
 let gc_pending_media_type = null;
 let gc_autoplay_video = false;
+let gc_pending_reply = null;
 let popup_refresh_delivered = null; // set while popup is open; called when delivered_map updates
 let backoff_delay = 500;
 let backoff_timer = null;
@@ -539,6 +553,7 @@ function render_messages() {
     for (const m of msgs) {
         const row = document.createElement('div');
         row.className = 'msg-row';
+        row.dataset.msgId = m.pub_key + ':' + m.timestamp;
 
         const meta = document.createElement('span');
         meta.className = 'msg-meta';
@@ -594,6 +609,49 @@ function render_messages() {
         }
 
         row.appendChild(meta);
+        if (m.reply_to) {
+            const rq = m.reply_to;
+            const quote = document.createElement('span');
+            quote.className = 'reply-quote';
+            const qPub = document.createElement('span');
+            qPub.innerHTML = coloredPubHtml(rq.pub_key) + '...';
+            quote.appendChild(qPub);
+            const qTs = document.createElement('span');
+            qTs.style.color = '#888';
+            qTs.textContent = ' [' + fmt_ts(rq.timestamp) + '] ';
+            quote.appendChild(qTs);
+            const qPreview = (rq.action ? '*' + rq.action : rq.text) || '';
+            quote.appendChild(document.createTextNode(qPreview.slice(0, 30) + (qPreview.length > 30 ? '…' : '')));
+            (function(rq_) {
+                quote.onclick = function(e) {
+                    e.stopPropagation();
+                    const targetEl = document.querySelector(`[data-msg-id="${rq_.pub_key}:${rq_.timestamp}"]`);
+                    if (targetEl) {
+                        targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        targetEl.style.outline = '2px solid #3a7bd5';
+                        setTimeout(() => { targetEl.style.outline = ''; }, 1500);
+                    } else {
+                        const next = quote.nextElementSibling;
+                        if (next && next.classList.contains('reply-expand')) {
+                            next.remove();
+                        } else {
+                            const exp = document.createElement('div');
+                            exp.className = 'reply-expand';
+                            const ePub = document.createElement('span');
+                            ePub.innerHTML = coloredPubHtml(rq_.pub_key) + '... ';
+                            const eTs = document.createElement('span');
+                            eTs.style.color = '#888';
+                            eTs.textContent = '[' + fmt_ts(rq_.timestamp) + '] ';
+                            exp.appendChild(ePub);
+                            exp.appendChild(eTs);
+                            exp.appendChild(document.createTextNode(rq_.action ? '*' + rq_.action : (rq_.text || '')));
+                            quote.parentNode.insertBefore(exp, quote.nextSibling);
+                        }
+                    }
+                };
+            })(rq);
+            row.appendChild(quote);
+        }
         if (m.action) {
             const as_ = document.createElement('span');
             as_.className = 'msg-action';
@@ -635,6 +693,14 @@ function render_messages() {
             meta.appendChild(mark);
             undelivered_els.set(m.timestamp, mark);
         }
+        const reply_btn = document.createElement('span');
+        reply_btn.className = 'msg-reply-btn';
+        reply_btn.textContent = '↩';
+        reply_btn.title = 'Reply';
+        (function(m_) {
+            reply_btn.onclick = function(e) { e.stopPropagation(); show_reply_bar(m_); };
+        })(m);
+        meta.appendChild(reply_btn);
         container.appendChild(row);
     }
     if (at_bottom) container.scrollTop = container.scrollHeight;
@@ -655,6 +721,7 @@ function send_to_peer(peer_pub) {
         if (m.action) gcm.action = m.action;
         if (m.nickname) gcm.nickname = m.nickname;
         if (m.image_hash) { gcm.image_hash = m.image_hash; if (m.media_type) gcm.media_type = m.media_type; }
+        if (m.reply_to) gcm.reply_to = m.reply_to;
         return {GroupChatMessage: gcm};
     };
     const make_payload = batch => JSON.stringify([{Forward:{
@@ -919,6 +986,7 @@ function connect() {
                         if (gcm.action) entry.action = gcm.action;
                         if (gcm.nickname) entry.nickname = gcm.nickname;
                         if (gcm.image_hash) { entry.image_hash = gcm.image_hash; if (gcm.media_type) entry.media_type = gcm.media_type; }
+                        if (gcm.reply_to) entry.reply_to = gcm.reply_to;
                         chat_msgs.push(entry);
                     }
                 } else if (forwarded && 'GroupChatDelivered' in msg) {
@@ -989,9 +1057,11 @@ function send_message() {
     const nick = nick_input.value.trim();
     if (nick) m.nickname = nick;
     if (gc_pending_image_hash) { m.image_hash = gc_pending_image_hash; if (gc_pending_media_type === 'video') m.media_type = 'video'; }
+    if (gc_pending_reply) { const r = Object.assign({}, gc_pending_reply); delete r.reply_to; m.reply_to = r; }
     add_messages([m]);
     input.value = '';
     gc_clear_image();
+    hide_reply_bar();
     send_to_all_peers();
 }
 
@@ -1048,6 +1118,29 @@ function gc_clear_image() {
     document.getElementById('gc-img-status').textContent = '';
 }
 
+function show_reply_bar(msg) {
+    gc_pending_reply = msg;
+    const content = document.getElementById('reply-bar-content');
+    content.innerHTML = '';
+    content.appendChild(document.createTextNode('↩ '));
+    const pubEl = document.createElement('span');
+    pubEl.innerHTML = coloredPubHtml(msg.pub_key) + '...';
+    content.appendChild(pubEl);
+    const tsEl = document.createElement('span');
+    tsEl.style.color = '#888';
+    tsEl.textContent = ' [' + fmt_ts(msg.timestamp) + '] ';
+    content.appendChild(tsEl);
+    const preview = (msg.action ? '*' + msg.action : msg.text) || '';
+    content.appendChild(document.createTextNode(preview.slice(0, 30) + (preview.length > 30 ? '…' : '')));
+    document.getElementById('reply-bar').style.display = 'flex';
+    document.getElementById('msg_input').focus();
+}
+
+function hide_reply_bar() {
+    gc_pending_reply = null;
+    document.getElementById('reply-bar').style.display = 'none';
+}
+
 document.getElementById('gc-img-input').addEventListener('change', e => {
     const file = e.target.files[0];
     if (!file) return;
@@ -1072,6 +1165,7 @@ document.getElementById('gc-img-input').addEventListener('change', e => {
 });
 
 document.getElementById('gc-img-remove').addEventListener('click', gc_clear_image);
+document.getElementById('reply-cancel').addEventListener('click', hide_reply_bar);
 
 document.getElementById('gc-autoplay-btn').addEventListener('click', () => {
     gc_autoplay_video = !gc_autoplay_video;
