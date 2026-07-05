@@ -121,6 +121,9 @@ code.ic { background:#e0e0e0; padding:1px 4px; border-radius:2px; font-size:92%;
 <div id=inputbar>
   <input type="file" id="gc-img-input" accept="image/*,video/*" style="display:none">
   <label for="gc-img-input" class="gc-img-btn" title="Attach image">&#128247;</label>
+  <input type="file" id="gc-file-input" style="display:none">
+  <label for="gc-file-input" class="gc-img-btn" title="Attach file">&#128206;</label>
+  <span id="gc-file-status" style="font-size:11px;color:#888;flex-shrink:0;"></span>
   <textarea id=msg_input placeholder="Type a message -- Ctrl+Enter to send, Enter for newline" disabled></textarea>
   <button id=send_btn disabled>Send</button>
 </div>
@@ -1166,6 +1169,46 @@ document.getElementById('gc-img-input').addEventListener('change', e => {
 
 document.getElementById('gc-img-remove').addEventListener('click', gc_clear_image);
 document.getElementById('reply-cancel').addEventListener('click', hide_reply_bar);
+
+// ---- generic file attach ----
+function gc_upload_file(file) {
+    const status = document.getElementById('gc-file-status');
+    status.textContent = 'uploading…';
+    const xhr = new XMLHttpRequest();
+    xhr.upload.addEventListener('progress', e => {
+        if (!e.lengthComputable) return;
+        status.textContent = (e.loaded / e.total * 100).toFixed(0) + '%';
+    });
+    xhr.addEventListener('load', () => {
+        if (xhr.status === 200) {
+            try {
+                const r = JSON.parse(xhr.responseText);
+                const url = r.blake3 ? `${GC_BASE}/blake3/${r.blake3}` : '';
+                if (url) {
+                    const input = document.getElementById('msg_input');
+                    input.value = (input.value ? input.value + ' ' : '') + url;
+                    status.textContent = '';
+                } else {
+                    status.textContent = 'upload error';
+                }
+            } catch(e) { status.textContent = 'parse error'; }
+        } else {
+            status.textContent = 'failed';
+        }
+    });
+    xhr.addEventListener('error', () => { status.textContent = 'network error'; });
+    xhr.open('POST', '/upload');
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
+    xhr.send(file);
+}
+
+document.getElementById('gc-file-input').addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    e.target.value = '';
+    gc_upload_file(file);
+});
 
 document.getElementById('gc-autoplay-btn').addEventListener('click', () => {
     gc_autoplay_video = !gc_autoplay_video;

@@ -262,6 +262,9 @@ body {
         <div id="compose-footer">
           <input type="file" id="img-file-input" accept="image/*,video/*" style="display:none">
           <label for="img-file-input" class="img-attach-label" title="Attach image">&#128247;</label>
+          <input type="file" id="file-file-input" style="display:none">
+          <label for="file-file-input" class="img-attach-label" title="Attach file">&#128206;</label>
+          <span id="file-upload-status" style="font-size:11px;color:#657786;"></span>
           <span id="char-count">280</span>
           <button id="autoplay-btn" style="font-size:11px;padding:1px 6px;cursor:pointer;color:#aab8c2;" title="Toggle video autoplay">&#9654; off</button>
           <button id="chirp-btn" disabled>Chirp</button>
@@ -688,6 +691,46 @@ document.getElementById('img-file-input').addEventListener('change', e => {
 });
 
 document.getElementById('img-remove').addEventListener('click', clear_chirp_image);
+
+// ---- generic file attach ----
+function upload_chirp_file(file) {
+  const status = document.getElementById('file-upload-status');
+  status.textContent = 'uploading…';
+  const xhr = new XMLHttpRequest();
+  xhr.upload.addEventListener('progress', e => {
+    if (!e.lengthComputable) return;
+    status.textContent = 'uploading… ' + (e.loaded / e.total * 100).toFixed(0) + '%';
+  });
+  xhr.addEventListener('load', () => {
+    if (xhr.status === 200) {
+      try {
+        const r = JSON.parse(xhr.responseText);
+        const url = r.blake3 ? `${BASE}/blake3/${r.blake3}` : '';
+        if (url) {
+          input_el.value = (input_el.value ? input_el.value + ' ' : '') + url;
+          input_el.dispatchEvent(new Event('input'));
+          status.textContent = '';
+        } else {
+          status.textContent = 'upload error';
+        }
+      } catch(e) { status.textContent = 'parse error'; }
+    } else {
+      status.textContent = 'upload failed';
+    }
+  });
+  xhr.addEventListener('error', () => { status.textContent = 'network error'; });
+  xhr.open('POST', '/upload');
+  xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+  xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
+  xhr.send(file);
+}
+
+document.getElementById('file-file-input').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = '';
+  upload_chirp_file(file);
+});
 
 document.getElementById('autoplay-btn').addEventListener('click', () => {
   autoplay_video = !autoplay_video;
