@@ -336,6 +336,7 @@ function ingest(incoming) {
     save(existing);
     safe_render();
   }
+  return added;
 }
 
 // ---- identity / color ----
@@ -778,6 +779,7 @@ function connect() {
   socket.onopen = () => {
     set_status('connected', true);
     blast_peers();
+    arm_backoff();
     socket.onmessage = ev => {
       let outer;
       try { outer = JSON.parse(ev.data); } catch { return; }
@@ -795,7 +797,7 @@ function connect() {
           if (m && 'ChirpMessage' in m)
             batch.push(decode(from, m.ChirpMessage));
         }
-        if (batch.length) ingest(batch);
+        if (batch.length && ingest(batch) > 0) send_to(from);
       }
     };
   };
