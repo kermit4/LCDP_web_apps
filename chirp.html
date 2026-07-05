@@ -203,6 +203,21 @@ body {
   cursor: pointer;
 }
 .chirp-img:hover { opacity: 0.9; }
+.chirp-video {
+  display: block;
+  margin-top: 10px;
+  max-width: 100%;
+  max-height: 300px;
+  border-radius: 14px;
+  border: 1px solid #e1e8ed;
+}
+#video-preview {
+  max-width: 280px;
+  max-height: 160px;
+  border-radius: 10px;
+  border: 1px solid #e1e8ed;
+  display: none;
+}
 </style>
 </head>
 <body>
@@ -240,13 +255,15 @@ body {
         <textarea id="chirp-input" placeholder="What&#39;s chirping?" maxlength="280" disabled></textarea>
         <div id="img-preview-box">
           <img id="img-preview" alt="preview">
+          <video id="video-preview" controls muted></video>
           <button id="img-remove" title="Remove image">&#x2715;</button>
           <div id="img-upload-status"></div>
         </div>
         <div id="compose-footer">
-          <input type="file" id="img-file-input" accept="image/*" style="display:none">
+          <input type="file" id="img-file-input" accept="image/*,video/*" style="display:none">
           <label for="img-file-input" class="img-attach-label" title="Attach image">&#128247;</label>
           <span id="char-count">280</span>
+          <button id="autoplay-btn" style="font-size:11px;padding:1px 6px;cursor:pointer;color:#aab8c2;" title="Toggle video autoplay">&#9654; off</button>
           <button id="chirp-btn" disabled>Chirp</button>
         </div>
       </div>
@@ -278,6 +295,8 @@ let backoff_timer = null;
 let backoff_ms = 500;
 let pending_image_hash = null;
 let pending_image_uploading = false;
+let pending_media_type = null;
+let autoplay_video = false;
 
 // ---- storage ----
 function load() {
@@ -466,14 +485,24 @@ function make_card(c, by_key) {
   linkify(txt, c.text);
   body.appendChild(txt);
 
-  // image
+  // image / video
   if (c.image_hash) {
-    const img = document.createElement('img');
-    img.className = 'chirp-img';
-    img.src = BASE + '/blake3/' + c.image_hash;
-    img.alt = 'image';
-    img.onclick = () => window.open(BASE + '/blake3/' + c.image_hash, '_blank');
-    body.appendChild(img);
+    if (c.media_type === 'video') {
+      const vid = document.createElement('video');
+      vid.className = 'chirp-video';
+      vid.src = BASE + '/blake3/' + c.image_hash;
+      vid.controls = true;
+      vid.muted = true;
+      if (autoplay_video) vid.autoplay = true;
+      body.appendChild(vid);
+    } else {
+      const img = document.createElement('img');
+      img.className = 'chirp-img';
+      img.src = BASE + '/blake3/' + c.image_hash;
+      img.alt = 'image';
+      img.onclick = () => window.open(BASE + '/blake3/' + c.image_hash, '_blank');
+      body.appendChild(img);
+    }
   }
 
   // actions
@@ -538,6 +567,7 @@ function rechirp(c) {
     reply_pub: null,
     reply_ts: null,
     image_hash: c.image_hash || null,
+    media_type: c.media_type || null,
   };
   ingest([rc]);
   blast_peers();
@@ -622,8 +652,13 @@ function upload_chirp_image(file) {
 function clear_chirp_image() {
   pending_image_hash = null;
   pending_image_uploading = false;
+  pending_media_type = null;
   document.getElementById('img-preview-box').style.display = 'none';
   document.getElementById('img-preview').src = '';
+  document.getElementById('img-preview').style.display = 'block';
+  const vp = document.getElementById('video-preview');
+  vp.src = '';
+  vp.style.display = 'none';
   document.getElementById('img-upload-status').textContent = '';
   update_btn_state();
 }
@@ -632,15 +667,31 @@ document.getElementById('img-file-input').addEventListener('change', e => {
   const file = e.target.files[0];
   if (!file) return;
   e.target.value = '';
-  const prev = document.getElementById('img-preview');
+  const isVideo = file.type.startsWith('video/');
+  pending_media_type = isVideo ? 'video' : 'image';
   const obj = URL.createObjectURL(file);
-  prev.src = obj;
-  prev.onload = () => URL.revokeObjectURL(obj);
+  if (isVideo) {
+    document.getElementById('img-preview').style.display = 'none';
+    const vp = document.getElementById('video-preview');
+    vp.src = obj;
+    vp.style.display = 'block';
+  } else {
+    const prev = document.getElementById('img-preview');
+    prev.src = obj;
+    prev.onload = () => URL.revokeObjectURL(obj);
+    prev.style.display = 'block';
+    document.getElementById('video-preview').style.display = 'none';
+  }
   document.getElementById('img-preview-box').style.display = 'block';
   upload_chirp_image(file);
 });
 
 document.getElementById('img-remove').addEventListener('click', clear_chirp_image);
+
+document.getElementById('autoplay-btn').addEventListener('click', () => {
+  autoplay_video = !autoplay_video;
+  document.getElementById('autoplay-btn').textContent = '▶ ' + (autoplay_video ? 'on' : 'off');
+});
 
 function post() {
   const text = input_el.value.trim();
@@ -652,6 +703,7 @@ function post() {
     reply_pub: reply_to ? reply_to.pub : null,
     reply_ts:  reply_to ? reply_to.ts  : null,
     image_hash: pending_image_hash || null,
+    media_type: pending_media_type || null,
   };
   ingest([c]);
   input_el.value = '';
@@ -666,7 +718,7 @@ function post() {
 function encode(c) {
   const m = { ts: c.ts, text: c.text };
   if (c.reply_pub && c.reply_ts) { m.reply_pub = c.reply_pub; m.reply_ts = c.reply_ts; }
-  if (c.image_hash) m.image_hash = c.image_hash;
+  if (c.image_hash) { m.image_hash = c.image_hash; if (c.media_type) m.media_type = c.media_type; }
   return { ChirpMessage: m };
 }
 
@@ -678,6 +730,7 @@ function decode(pub, m) {
     reply_pub:  m.reply_pub  || null,
     reply_ts:   m.reply_ts   || null,
     image_hash: m.image_hash || null,
+    media_type: m.media_type || null,
   };
 }
 

@@ -70,6 +70,15 @@ code.ic { background:#e0e0e0; padding:1px 4px; border-radius:2px; font-size:92%;
   cursor: pointer;
 }
 .msg-img:hover { opacity: 0.88; }
+.msg-video {
+  display: block;
+  max-width: min(300px, 100%);
+  max-height: 220px;
+  border-radius: 6px;
+  border: 1px solid #ddd;
+  margin: 4px 0 2px 0;
+}
+#gc-video-preview { max-height: 72px; max-width: 100px; border-radius: 4px; border: 1px solid #bbb; display: none; }
 </style>
 </head>
 <body>
@@ -83,6 +92,7 @@ code.ic { background:#e0e0e0; padding:1px 4px; border-radius:2px; font-size:92%;
 <div id="peer-popup"></div>
 <div id="img-attach-bar">
   <img id="gc-img-preview" alt="preview">
+  <video id="gc-video-preview" controls muted></video>
   <span id="gc-img-status"></span>
   <button id="gc-img-remove" title="Remove image">&#x2715;</button>
 </div>
@@ -92,10 +102,11 @@ code.ic { background:#e0e0e0; padding:1px 4px; border-radius:2px; font-size:92%;
   &nbsp;&nbsp;<button id=notif_btn style="font-size:11px;padding:1px 6px;cursor:pointer;">Enable notifications</button>
   &nbsp;&nbsp;nickname: <input id=nick_input type=text placeholder="anonymous" maxlength=32 style="font-size:11px;font-family:monospace;padding:1px 4px;width:100px;border:1px solid #bbb;border-radius:2px;background:#f5f5f5;">
   &nbsp;&nbsp;<span id=sent_kb style="color:#999;font-size:10px;"></span>
+  &nbsp;&nbsp;<button id="gc-autoplay-btn" style="font-size:11px;padding:1px 6px;cursor:pointer;" title="Toggle video autoplay">Autoplay: off</button>
   &nbsp;&nbsp;<span style="color:#999;font-size:10px;" title="Wrap code in triple backticks:&#10;&#96;&#96;&#96;rust&#10;fn main() {}&#10;&#96;&#96;&#96;&#10;Language optional — auto-detected if omitted.&#10;Inline: &#96;code&#96;">&#96;&#96;&#96;lang for code</span>
 </div>
 <div id=inputbar>
-  <input type="file" id="gc-img-input" accept="image/*" style="display:none">
+  <input type="file" id="gc-img-input" accept="image/*,video/*" style="display:none">
   <label for="gc-img-input" class="gc-img-btn" title="Attach image">&#128247;</label>
   <textarea id=msg_input placeholder="Type a message -- Ctrl+Enter to send, Enter for newline" disabled></textarea>
   <button id=send_btn disabled>Send</button>
@@ -116,6 +127,8 @@ let known_peers = new Set();
 let ping_pending = false;
 let gc_pending_image_hash = null;
 let gc_pending_image_uploading = false;
+let gc_pending_media_type = null;
+let gc_autoplay_video = false;
 let popup_refresh_delivered = null; // set while popup is open; called when delivered_map updates
 let backoff_delay = 500;
 let backoff_timer = null;
@@ -590,12 +603,22 @@ function render_messages() {
             render_message_text(row, m.text);
         }
         if (m.image_hash) {
-            const img = document.createElement('img');
-            img.className = 'msg-img';
-            img.src = GC_BASE + '/blake3/' + m.image_hash;
-            img.alt = 'image';
-            img.onclick = () => window.open(GC_BASE + '/blake3/' + m.image_hash, '_blank');
-            row.appendChild(img);
+            if (m.media_type === 'video') {
+                const vid = document.createElement('video');
+                vid.className = 'msg-video';
+                vid.src = GC_BASE + '/blake3/' + m.image_hash;
+                vid.controls = true;
+                vid.muted = true;
+                if (gc_autoplay_video) vid.autoplay = true;
+                row.appendChild(vid);
+            } else {
+                const img = document.createElement('img');
+                img.className = 'msg-img';
+                img.src = GC_BASE + '/blake3/' + m.image_hash;
+                img.alt = 'image';
+                img.onclick = () => window.open(GC_BASE + '/blake3/' + m.image_hash, '_blank');
+                row.appendChild(img);
+            }
         }
         const k = m.pub_key + ':' + m.timestamp;
         if (unseen_keys.has(k)) {
@@ -631,7 +654,7 @@ function send_to_peer(peer_pub) {
         const gcm = { group_name: m.group_name, text: m.text, timestamp: m.timestamp };
         if (m.action) gcm.action = m.action;
         if (m.nickname) gcm.nickname = m.nickname;
-        if (m.image_hash) gcm.image_hash = m.image_hash;
+        if (m.image_hash) { gcm.image_hash = m.image_hash; if (m.media_type) gcm.media_type = m.media_type; }
         return {GroupChatMessage: gcm};
     };
     const make_payload = batch => JSON.stringify([{Forward:{
@@ -895,7 +918,7 @@ function connect() {
                         const entry = { pub_key: src, text: gcm.text, timestamp: gcm.timestamp, group_name: gcm.group_name };
                         if (gcm.action) entry.action = gcm.action;
                         if (gcm.nickname) entry.nickname = gcm.nickname;
-                        if (gcm.image_hash) entry.image_hash = gcm.image_hash;
+                        if (gcm.image_hash) { entry.image_hash = gcm.image_hash; if (gcm.media_type) entry.media_type = gcm.media_type; }
                         chat_msgs.push(entry);
                     }
                 } else if (forwarded && 'GroupChatDelivered' in msg) {
@@ -965,7 +988,7 @@ function send_message() {
     if (action) m.action = action;
     const nick = nick_input.value.trim();
     if (nick) m.nickname = nick;
-    if (gc_pending_image_hash) m.image_hash = gc_pending_image_hash;
+    if (gc_pending_image_hash) { m.image_hash = gc_pending_image_hash; if (gc_pending_media_type === 'video') m.media_type = 'video'; }
     add_messages([m]);
     input.value = '';
     gc_clear_image();
@@ -1016,8 +1039,12 @@ function gc_upload_image(file) {
 function gc_clear_image() {
     gc_pending_image_hash = null;
     gc_pending_image_uploading = false;
+    gc_pending_media_type = null;
     document.getElementById('img-attach-bar').style.display = 'none';
     document.getElementById('gc-img-preview').src = '';
+    const vp = document.getElementById('gc-video-preview');
+    vp.src = '';
+    vp.style.display = 'none';
     document.getElementById('gc-img-status').textContent = '';
 }
 
@@ -1025,15 +1052,31 @@ document.getElementById('gc-img-input').addEventListener('change', e => {
     const file = e.target.files[0];
     if (!file) return;
     e.target.value = '';
-    const prev = document.getElementById('gc-img-preview');
+    const isVideo = file.type.startsWith('video/');
+    gc_pending_media_type = isVideo ? 'video' : 'image';
     const obj = URL.createObjectURL(file);
-    prev.src = obj;
-    prev.onload = () => URL.revokeObjectURL(obj);
+    if (isVideo) {
+        document.getElementById('gc-img-preview').style.display = 'none';
+        const vp = document.getElementById('gc-video-preview');
+        vp.src = obj;
+        vp.style.display = '';
+    } else {
+        const prev = document.getElementById('gc-img-preview');
+        prev.src = obj;
+        prev.onload = () => URL.revokeObjectURL(obj);
+        prev.style.display = '';
+        document.getElementById('gc-video-preview').style.display = 'none';
+    }
     document.getElementById('img-attach-bar').style.display = 'flex';
     gc_upload_image(file);
 });
 
 document.getElementById('gc-img-remove').addEventListener('click', gc_clear_image);
+
+document.getElementById('gc-autoplay-btn').addEventListener('click', () => {
+    gc_autoplay_video = !gc_autoplay_video;
+    document.getElementById('gc-autoplay-btn').textContent = 'Autoplay: ' + (gc_autoplay_video ? 'on' : 'off');
+});
 
 // Register service worker for browser notifications (bypasses Chromium's suppression
 // of new Notification() when the browser window has focus in another tab).
