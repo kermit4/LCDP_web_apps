@@ -289,6 +289,18 @@ function save(arr) {
 }
 function chirp_key(c) { return c.pub + ':' + c.ts; }
 
+let render_error_shown = false;
+function safe_render() {
+  try {
+    render();
+  } catch(e) {
+    if (!render_error_shown) {
+      render_error_shown = true;
+      alert('Chirp display error: ' + e.message + '\n\nIf chirps look broken or posting stops working, clear site data for this page in your browser settings, then reload.');
+    }
+  }
+}
+
 function ingest(incoming) {
   const existing = load();
   const seen = new Set(existing.map(chirp_key));
@@ -303,7 +315,7 @@ function ingest(incoming) {
   if (added > 0) {
     existing.sort((a, b) => a.ts - b.ts);
     save(existing);
-    render();
+    safe_render();
   }
 }
 
@@ -492,12 +504,12 @@ function setFilter(pub) {
   document.getElementById('filter-bar').style.display = 'flex';
   document.getElementById('filter-name').textContent =
     '@' + short(pub) + (pub === my_pub ? ' (you)' : '');
-  render();
+  safe_render();
 }
 function clearFilter() {
   filter_pub = null;
   document.getElementById('filter-bar').style.display = 'none';
-  render();
+  safe_render();
 }
 
 // ---- reply ----
@@ -537,7 +549,7 @@ function scrollToChirp(pub, ts) {
   if (filter_pub) {
     filter_pub = null;
     document.getElementById('filter-bar').style.display = 'none';
-    render();
+    safe_render();
   }
   const card = document.querySelector('[data-key="' + key + '"]');
   if (card) {
@@ -755,7 +767,7 @@ async function poll_status() {
       document.getElementById('my-pub-display').title = my_pub;
       input_el.disabled = false;
       update_btn_state();
-      render();
+      safe_render();
     }
     const peers = (d.active_peers || []).map(p => strip0x(p.pub));
     known_peers = new Set(peers);
@@ -765,12 +777,12 @@ async function poll_status() {
 }
 
 // ---- init ----
-render();
+safe_render();
 connect();
 arm_backoff();
 poll_status();
 setInterval(poll_status, 8000);
-setInterval(render, 30000);  // refresh relative timestamps
+setInterval(safe_render, 30000);  // refresh relative timestamps
 </script>
 </body>
 </html>
