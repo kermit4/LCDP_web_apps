@@ -604,10 +604,11 @@ function render_messages() {
 
         meta.appendChild(ts_span);
         meta.appendChild(key_link);
-        if (m.nickname) {
+        const display_nick = m.nickname || (m.pub_key === my_ed25519 ? nick_input.value.trim() : '');
+        if (display_nick) {
             const nick_span = document.createElement('span');
             nick_span.style.cssText = 'color:#666;font-weight:normal;margin-left:4px;';
-            nick_span.textContent = '(' + m.nickname + ')';
+            nick_span.textContent = '(' + display_nick + ')';
             meta.appendChild(nick_span);
         }
 
@@ -722,7 +723,7 @@ function send_to_peer(peer_pub) {
     const make_msg = m => {
         const gcm = { group_name: m.group_name, text: m.text, timestamp: m.timestamp };
         if (m.action) gcm.action = m.action;
-        if (m.nickname) gcm.nickname = m.nickname;
+        const cur_nick = nick_input.value.trim(); if (cur_nick) gcm.nickname = cur_nick;
         if (m.image_hash) { gcm.image_hash = m.image_hash; if (m.media_type) gcm.media_type = m.media_type; }
         if (m.reply_to) gcm.reply_to = m.reply_to;
         return {GroupChatMessage: gcm};
@@ -1057,8 +1058,6 @@ function send_message() {
     }
     const m = { pub_key: my_ed25519, text, timestamp: Date.now(), group_name: GROUP_NAME };
     if (action) m.action = action;
-    const nick = nick_input.value.trim();
-    if (nick) m.nickname = nick;
     if (gc_pending_image_hash) { m.image_hash = gc_pending_image_hash; if (gc_pending_media_type === 'video') m.media_type = 'video'; }
     if (gc_pending_reply) { const r = Object.assign({}, gc_pending_reply); delete r.reply_to; m.reply_to = r; }
     add_messages([m]);
