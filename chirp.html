@@ -293,6 +293,7 @@ let my_pub = null;
 let known_peers = new Set();
 let greeted_peers = new Set();
 let socket = null;
+let last_reactive_send_ms = 0;
 let filter_pub = null;
 let reply_to = null;   // {pub, ts}
 let backoff_timer = null;
@@ -793,6 +794,12 @@ function send_to(peer_pub) {
 
 function blast_peers() { for (const p of known_peers) send_to(p); }
 
+function reactive_send_allowed() {
+  const now = Date.now();
+  if (now - last_reactive_send_ms >= 60000) { last_reactive_send_ms = now; return true; }
+  return false;
+}
+
 function send_chirp_update_to(peer_pub) {
   if (!socket || socket.readyState !== WebSocket.OPEN) return;
   socket.send(JSON.stringify([{ Forward: {
@@ -861,8 +868,8 @@ function connect() {
           else if (m && 'ChirpUpdate' in m)
             got_update = true;
         }
-        if (batch.length && ingest(batch) > 0) send_to(from);
-        if (got_update) send_to(from);
+        const new_chirps = batch.length ? ingest(batch) : 0;
+        if ((new_chirps > 0 || got_update) && reactive_send_allowed()) send_to(from);
       }
     };
   };
