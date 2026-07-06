@@ -291,6 +291,7 @@ const BASE = `${location.protocol}//${location.hostname}:${PORT}`;
 
 let my_pub = null;
 let known_peers = new Set();
+let greeted_peers = new Set();
 let socket = null;
 let filter_pub = null;
 let reply_to = null;   // {pub, ts}
@@ -792,6 +793,21 @@ function send_to(peer_pub) {
 
 function blast_peers() { for (const p of known_peers) send_to(p); }
 
+function send_chirp_update_to(peer_pub) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  socket.send(JSON.stringify([{ Forward: {
+    to_ed25519: peer_pub,
+    messages: [{ ChirpUpdate: {} }],
+  }}]));
+  greeted_peers.add(peer_pub);
+}
+
+function greet_new_peers() {
+  for (const p of known_peers) {
+    if (!greeted_peers.has(p)) send_chirp_update_to(p);
+  }
+}
+
 // exponential backoff retransmit (same pattern as group_chat.html)
 function arm_backoff() {
   clearTimeout(backoff_timer);
@@ -816,6 +832,7 @@ function connect() {
 
   socket.onclose = () => {
     set_status('disconnected — reconnecting…', false);
+    greeted_peers.clear();
     setTimeout(connect, 200);
   };
 
@@ -823,6 +840,7 @@ function connect() {
     set_status('connected', true);
     blast_peers();
     arm_backoff();
+    greet_new_peers();
     socket.onmessage = ev => {
       let outer;
       try { outer = JSON.parse(ev.data); } catch { return; }
@@ -836,11 +854,15 @@ function connect() {
         try { inner = JSON.parse(fwd.messages); } catch { continue; }
         if (!Array.isArray(inner)) continue;
         const batch = [];
+        let got_update = false;
         for (const m of inner) {
           if (m && 'ChirpMessage' in m)
             batch.push(decode(from, m.ChirpMessage));
+          else if (m && 'ChirpUpdate' in m)
+            got_update = true;
         }
         if (batch.length && ingest(batch) > 0) send_to(from);
+        if (got_update) send_to(from);
       }
     };
   };
@@ -871,6 +893,9 @@ async function poll_status() {
     known_peers = new Set(peers);
     document.getElementById('peer-badge').textContent =
       peers.length + ' peer' + (peers.length === 1 ? '' : 's');
+    for (const p of peers) {
+      if (!greeted_peers.has(p)) send_chirp_update_to(p);
+    }
   } catch {}
 }
 
