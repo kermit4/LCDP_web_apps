@@ -869,7 +869,7 @@ function connect() {
             got_update = true;
         }
         const new_chirps = batch.length ? ingest(batch) : 0;
-        if ((new_chirps > 0 || got_update) && reactive_send_allowed()) send_to(from);
+        if ((new_chirps > 0 || got_update) && fwd.might_be_ip_spoofing === false && reactive_send_allowed()) send_to(from);
       }
     };
   };
