@@ -813,7 +813,7 @@ function blast_peers() { for (const p of known_peers) send_to(p); }
 
 function reactive_send_allowed() {
   const now = Date.now();
-  if (now - last_reactive_send_ms >= 60000) { last_reactive_send_ms = now; return true; }
+  if (now - last_reactive_send_ms >= 3000) { last_reactive_send_ms = now; return true; }
   return false;
 }
 

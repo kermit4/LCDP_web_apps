@@ -820,7 +820,7 @@ function show_pong_notification(from_pub, rtt_ms) {
 
 function reactive_send_allowed() {
     const now = Date.now();
-    if (now - last_reactive_send_ms >= 60000) { last_reactive_send_ms = now; return true; }
+    if (now - last_reactive_send_ms >= 3000) { last_reactive_send_ms = now; return true; }
     return false;
 }
 
