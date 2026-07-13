@@ -569,24 +569,43 @@ function open_single_peer_popup(pub, cx, cy) {
 function open_delivered_popup(timestamp, cx, cy) {
     const popup = document.getElementById('peer-popup');
 
-    function build_list_html() {
+    function delivered_pubs() {
         const dl = delivered_map.get(timestamp);
-        if (!dl || dl.size === 0) return '<i style="color:#888">none yet</i>';
+        return dl && dl.size > 0 ? [...dl] : [];
+    }
+
+    function build_list_html(pubs) {
+        if (pubs.length === 0) return '<i style="color:#888">none yet</i>';
         let h = '';
-        for (const p of dl) h += `<span>${coloredPubHtml(p)}${p.slice(5)}</span><br>`;
+        for (let i = 0; i < pubs.length; i++)
+            h += `<span class="pub-key-btn" data-dp-peer="${i}" style="cursor:pointer;">${coloredPubHtml(pubs[i])}${pubs[i].slice(5)}</span><br>`;
         return h;
     }
 
+    function bind_clicks(pubs) {
+        for (let i = 0; i < pubs.length; i++) {
+            const pub = pubs[i];
+            const el = popup.querySelector(`[data-dp-peer="${i}"]`);
+            if (el) el.onclick = e => { e.stopPropagation(); open_single_peer_popup(pub, e.clientX, e.clientY); };
+        }
+    }
+
+    const initial_pubs = delivered_pubs();
     popup.innerHTML =
         `<span class="pp-close" id="pp-close">&#x2715;</span>` +
         `<b>delivered to</b><br>` +
-        `<span id="pp-delivered-list">${build_list_html()}</span>`;
+        `<span id="pp-delivered-list">${build_list_html(initial_pubs)}</span>`;
 
     positionEl(popup, cx, cy);
+    bind_clicks(initial_pubs);
     document.getElementById('pp-close').onclick = () => { popup.style.display = 'none'; popup_refresh_delivered = null; };
     popup_refresh_delivered = () => {
         const el = document.getElementById('pp-delivered-list');
-        if (el) el.innerHTML = build_list_html();
+        if (el) {
+            const pubs = delivered_pubs();
+            el.innerHTML = build_list_html(pubs);
+            bind_clicks(pubs);
+        }
     };
 }
 
