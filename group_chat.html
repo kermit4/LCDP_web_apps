@@ -1234,6 +1234,23 @@ document.getElementById('gc-img-input').addEventListener('change', e => {
 document.getElementById('gc-img-remove').addEventListener('click', gc_clear_image);
 document.getElementById('reply-cancel').addEventListener('click', hide_reply_bar);
 
+document.getElementById('msg_input').addEventListener('paste', e => {
+    const item = Array.from(e.clipboardData.items).find(i => i.kind === 'file' && i.type.startsWith('image/'));
+    if (!item) return;
+    e.preventDefault();
+    const ext = item.type.split('/')[1] || 'png';
+    const file = new File([item.getAsFile()], 'paste.' + ext, { type: item.type });
+    gc_pending_media_type = 'image';
+    const obj = URL.createObjectURL(file);
+    const prev = document.getElementById('gc-img-preview');
+    prev.src = obj;
+    prev.onload = () => URL.revokeObjectURL(obj);
+    prev.style.display = '';
+    document.getElementById('gc-video-preview').style.display = 'none';
+    document.getElementById('img-attach-bar').style.display = 'flex';
+    gc_upload_image(file);
+});
+
 // ---- generic file attach ----
 function gc_upload_file(file) {
     const status = document.getElementById('gc-file-status');

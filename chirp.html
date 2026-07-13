@@ -694,6 +694,23 @@ document.getElementById('img-file-input').addEventListener('change', e => {
 
 document.getElementById('img-remove').addEventListener('click', clear_chirp_image);
 
+document.getElementById('chirp-input').addEventListener('paste', e => {
+  const item = Array.from(e.clipboardData.items).find(i => i.kind === 'file' && i.type.startsWith('image/'));
+  if (!item) return;
+  e.preventDefault();
+  const ext = item.type.split('/')[1] || 'png';
+  const file = new File([item.getAsFile()], 'paste.' + ext, { type: item.type });
+  pending_media_type = 'image';
+  const obj = URL.createObjectURL(file);
+  const prev = document.getElementById('img-preview');
+  prev.src = obj;
+  prev.onload = () => URL.revokeObjectURL(obj);
+  prev.style.display = 'block';
+  document.getElementById('video-preview').style.display = 'none';
+  document.getElementById('img-preview-box').style.display = 'block';
+  upload_chirp_image(file);
+});
+
 // ---- generic file attach ----
 function upload_chirp_file(file) {
   const status = document.getElementById('file-upload-status');
