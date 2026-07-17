@@ -1,0 +1,1366 @@
+<html>
+<head>
+<title>Group Chat</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<link rel="manifest" href="manifest.json">
+<meta name="apple-mobile-web-app-title" content="Group Chat">
+<link rel="apple-touch-icon" href="icon.svg">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { height: 100%; overflow: hidden; }
+body { font-family: monospace; background: #fff; color: #000; display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+#topbar { padding: calc(6px + env(safe-area-inset-top, 0px)) 10px 6px 10px; background: #808080; color: #eee; font-size: 13px; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
+#messages { flex: 1; overflow-y: auto; padding: 8px 10px; }
+.msg-row { margin: 3px 0; line-height: 1.5; word-break: break-word; }
+.msg-meta { font-weight: bold; font-size: 12px; }
+.msg-meta a { color: inherit; text-decoration: none; }
+.msg-meta a:hover { text-decoration: underline; }
+.msg-text { margin-left: 2px; white-space: pre-wrap; }
+.msg-action { margin-left: 2px; font-style: italic; white-space: pre-wrap; }
+#inputbar { display: flex; padding: 6px 6px calc(6px + env(safe-area-inset-bottom, 0px)); gap: 6px; background: #ddd; flex-shrink: 0; border-top: 1px solid #bbb; }
+#msg_input { flex: 1; font-family: monospace; font-size: 14px; padding: 6px 8px; border: 1px solid #aaa; border-radius: 3px; resize: none; height: 40px; }
+#send_btn { padding: 6px 16px; background: #3a7bd5; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 14px; flex-shrink: 0; }
+#send_btn:disabled { background: #aaa; cursor: default; }
+#statusbar { padding: 3px 10px; background: #e8e8e8; font-size: 11px; color: #555; border-top: 1px solid #ccc; flex-shrink: 0; }
+a { color: #3a7bd5; }
+pre.code-block { background:#f3f3f3; color:#1f1f1f; border:1px solid #d0d0d0; padding:20px 12px 8px; border-radius:4px; white-space:pre-wrap; overflow-wrap:break-word; margin:4px 0 2px 0; font-size:12px; line-height:1.45; position:relative; max-width:100%; }
+pre.code-block code { font-family:monospace; }
+.code-lang { position:absolute; top:3px; left:10px; font-size:10px; color:#777; }
+.copy-btn { position:absolute; top:4px; right:6px; background:none; border:none; cursor:pointer; color:#777; padding:2px; line-height:0; border-radius:3px; }
+.copy-btn:hover { color:#ccc; }
+.copy-btn.copied { color:#6a9955; }
+code.ic { background:#e0e0e0; padding:1px 4px; border-radius:2px; font-size:92%; color:#333; }
+.hl-kw{color:#0000ff}.hl-ty{color:#267f99}.hl-st{color:#a31515}.hl-cm{color:#4a7c59;font-style:italic}.hl-nm{color:#098658}.hl-mc{color:#af00db}.hl-at{color:#af00db}.hl-lt{color:#001080}.hl-fn{color:#795e26}
+#peer-popup { position: fixed; display: none; background: rgba(255,255,255,0.98);
+  border: 1px solid #aaa; padding: 10px 14px; font-size: 12px;
+  font-family: 'Courier New', monospace; border-radius: 4px;
+  max-width: 380px; word-break: break-all;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.18); z-index: 200; }
+#peer-popup b { font-family: sans-serif; color: #555; font-size: 11px; }
+.pp-close { float: right; font-family: sans-serif; font-size: 16px; cursor: pointer;
+  color: #888; margin-left: 8px; line-height: 1; }
+.pp-close:hover { color: #333; }
+.pp-chat { color: #0055cc; font-family: sans-serif; font-weight: 600; text-decoration: none; }
+.pp-chat:hover { text-decoration: underline; }
+.pub-key-btn { cursor:pointer; }
+#img-attach-bar {
+  display: none;
+  background: #e8e8e8;
+  border-top: 1px solid #bbb;
+  padding: 5px 8px;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+#gc-img-preview { max-height: 72px; max-width: 100px; border-radius: 4px; border: 1px solid #bbb; }
+#gc-img-remove { background: none; border: none; cursor: pointer; color: #666; font-size: 18px; padding: 0 2px; line-height: 1; }
+#gc-img-status { font-size: 11px; color: #555; }
+.gc-img-btn {
+  padding: 6px 9px; background: #e0e0e0; color: #3a7bd5; border: 1px solid #bbb;
+  border-radius: 3px; cursor: pointer; font-size: 16px; flex-shrink: 0; line-height: 1;
+}
+.gc-img-btn:hover { background: #d0d0d0; }
+.msg-img {
+  display: block;
+  max-width: min(300px, 100%);
+  max-height: 220px;
+  border-radius: 6px;
+  border: 1px solid #ddd;
+  margin: 4px 0 2px 0;
+  cursor: pointer;
+}
+.msg-img:hover { opacity: 0.88; }
+.msg-video {
+  display: block;
+  max-width: min(300px, 100%);
+  max-height: 220px;
+  border-radius: 6px;
+  border: 1px solid #ddd;
+  margin: 4px 0 2px 0;
+}
+#gc-video-preview { max-height: 72px; max-width: 100px; border-radius: 4px; border: 1px solid #bbb; display: none; }
+.msg-reply-btn { font-size: 10px; color: #aaa; cursor: pointer; margin-left: 6px; padding: 1px 3px; border-radius: 2px; user-select: none; font-weight: normal; }
+.msg-reply-btn:hover { color: #333; background: #eee; }
+.reply-quote { display: block; margin: 1px 0 2px 2px; padding: 1px 7px; border-left: 3px solid #b0b0b0; background: #f5f5f5; font-size: 11px; cursor: pointer; border-radius: 0 2px 2px 0; max-width: min(420px, 96vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: normal; color: #444; }
+.reply-quote:hover { background: #e8e8e8; border-left-color: #3a7bd5; }
+.reply-expand { display: block; margin: 2px 0 2px 10px; padding: 4px 8px; border-left: 2px solid #ccc; background: #fafafa; font-size: 12px; white-space: pre-wrap; }
+#reply-bar { display: none; background: #ebebf0; border-top: 1px solid #bbb; padding: 4px 8px; align-items: center; gap: 8px; flex-shrink: 0; font-size: 11px; font-family: monospace; }
+#reply-bar-content { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #444; }
+#reply-cancel { background: none; border: none; cursor: pointer; color: #888; font-size: 16px; padding: 0 2px; line-height: 1; }
+#reply-cancel:hover { color: #333; }
+#scroll-to-bottom { position:fixed; bottom:90px; right:12px; display:none; background:rgba(58,123,213,0.85); color:#fff; border:none; border-radius:20px; padding:5px 11px; font-size:18px; cursor:pointer; z-index:100; box-shadow:0 2px 8px rgba(0,0,0,0.22); line-height:1; }
+#scroll-to-bottom:hover { background:#3a7bd5; }
+</style>
+</head>
+<body>
+
+<div id=topbar>
+  <span>Group Chat &mdash; <b id=group_name_display>main</b></span>
+  <span id=ws_uptime style="font-size:11px;color:#ccc;"></span>
+  <span><span id=peer_count_btn style="cursor:pointer;text-decoration:underline dotted;" title="Click to see peers"><span id=peer_count>0</span> peers</span> &nbsp;|&nbsp; <a href=/ style="color:#aaa;">status</a></span>
+</div>
+<div id=messages></div>
+<button id="scroll-to-bottom" title="Scroll to bottom">&#x2193;</button>
+<div id="peer-popup"></div>
+<div id="img-attach-bar">
+  <img id="gc-img-preview" alt="preview">
+  <video id="gc-video-preview" controls muted></video>
+  <span id="gc-img-status"></span>
+  <button id="gc-img-remove" title="Remove image">&#x2715;</button>
+</div>
+<div id="reply-bar">
+  <span id="reply-bar-content"></span>
+  <button id="reply-cancel" title="Cancel reply">&#x2715;</button>
+</div>
+<div id=statusbar>
+  <span id=status_text>connecting...</span>
+  &nbsp;&nbsp;me: <span id=my_pub_display title="">...</span>
+  &nbsp;&nbsp;<button id=notif_btn style="font-size:11px;padding:1px 6px;cursor:pointer;">Enable notifications</button>
+  &nbsp;&nbsp;nickname: <input id=nick_input type=text placeholder="anonymous" maxlength=32 style="font-size:11px;font-family:monospace;padding:1px 4px;width:100px;border:1px solid #bbb;border-radius:2px;background:#f5f5f5;">
+  &nbsp;&nbsp;<span id=sent_kb style="color:#999;font-size:10px;"></span>
+  &nbsp;&nbsp;<button id="gc-autoplay-btn" style="font-size:11px;padding:1px 6px;cursor:pointer;" title="Toggle video autoplay">Autoplay: off</button>
+  &nbsp;&nbsp;<span style="color:#999;font-size:10px;" title="Wrap code in triple backticks:&#10;&#96;&#96;&#96;rust&#10;fn main() {}&#10;&#96;&#96;&#96;&#10;Language optional — auto-detected if omitted.&#10;Inline: &#96;code&#96;">&#96;&#96;&#96;lang for code</span>
+</div>
+<div id=inputbar>
+  <input type="file" id="gc-img-input" accept="image/*,video/*" style="display:none">
+  <label for="gc-img-input" class="gc-img-btn" title="Attach image">&#128247;</label>
+  <input type="file" id="gc-file-input" style="display:none">
+  <label for="gc-file-input" class="gc-img-btn" title="Attach file">&#128206;</label>
+  <span id="gc-file-status" style="font-size:11px;color:#888;flex-shrink:0;"></span>
+  <textarea id=msg_input placeholder="Type a message -- Ctrl+Enter to send, Enter for newline" disabled></textarea>
+  <button id=send_btn disabled>Send</button>
+</div>
+
+<script>
+const GROUP_NAME = 'main';
+const LS_KEY = 'gc_messages_' + GROUP_NAME;
+const LS_NICK = 'gc_nickname';
+const LS_DELIVERED = 'gc_delivered_' + GROUP_NAME;
+
+const GC_PORT = location.port || 24255;
+const GC_BASE = `${location.protocol}//${location.hostname}:${GC_PORT}`;
+
+let my_ed25519 = null;
+let socket;
+let known_peers = new Set();
+let greeted_peers = new Set();
+let last_reactive_send_ms = 0;
+let ping_pending = false;
+let gc_pending_image_hash = null;
+let gc_pending_image_uploading = false;
+let gc_pending_media_type = null;
+let gc_autoplay_video = false;
+let gc_pending_reply = null;
+let popup_refresh_delivered = null; // set while popup is open; called when delivered_map updates
+let backoff_delay = 500;
+let backoff_timer = null;
+let ws_connect_time = null;
+let ws_uptime_timer = null;
+
+function fmt_uptime(ms) {
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return s + 's';
+    const m = Math.floor(s / 60), ss = s % 60;
+    if (m < 60) return m + 'm ' + ss + 's';
+    return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
+}
+
+function update_ws_uptime() {
+    if (!ws_connect_time) return;
+    document.getElementById('ws_uptime').textContent = 'connected for ' + fmt_uptime(Date.now() - ws_connect_time);
+}
+
+const unseen_keys       = new Set();
+const seen_accum        = new Map();
+const unseen_els        = new Map();
+const pending_notif_tags = new Set();
+const delivered_map     = new Map(); // timestamp -> Set<pub_key> of who sent delivery receipts
+const undelivered_els   = new Map(); // timestamp -> row element for my undelivered messages
+let   visible_keys = new Set();
+let   seen_ticker  = null;
+let   unseen_io    = null;
+
+function strip_0x(s) { return (s && s.startsWith('0x')) ? s.slice(2) : s; }
+
+function load_messages() {
+    try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); } catch(e) { return []; }
+}
+
+function save_messages(msgs) {
+    localStorage.setItem(LS_KEY, JSON.stringify(msgs));
+}
+
+function load_delivered() {
+    try {
+        const raw = JSON.parse(localStorage.getItem(LS_DELIVERED) || '[]');
+        for (const [ts, pubs] of raw) delivered_map.set(ts, new Set(pubs));
+    } catch(e) {}
+}
+
+function save_delivered() {
+    const raw = [];
+    for (const [ts, pubs] of delivered_map) raw.push([ts, [...pubs]]);
+    localStorage.setItem(LS_DELIVERED, JSON.stringify(raw));
+}
+
+// Returns array of newly added messages (empty if all already known)
+function add_messages(new_msgs) {
+    const existing = load_messages();
+    const keys = new Set(existing.map(m => m.pub_key + ':' + m.timestamp));
+    const added = [];
+    for (const m of new_msgs) {
+        const k = m.pub_key + ':' + m.timestamp;
+        if (!keys.has(k)) {
+            existing.push(m);
+            keys.add(k);
+            added.push(m);
+        }
+    }
+    if (added.length > 0) {
+        for (const m of added) {
+            const k = m.pub_key + ':' + m.timestamp;
+            unseen_keys.add(k);
+            if (!seen_accum.has(k)) seen_accum.set(k, 0);
+        }
+        save_messages(existing);
+        render_messages();
+        const from_others = added.filter(m => m.pub_key !== my_ed25519);
+        if (from_others.length > 0) notify_new(from_others);
+    }
+    return added;
+}
+
+// nibble & 7 → CSS color, matching the ANSI 30-37 palette used in the CLI
+const NIBBLE_COLORS = ['#111','#c0392b','#27ae60','#b7950b','#2471a3','#7d3c98','#148f77','#888'];
+
+function colored_pub_prefix(pub_key) {
+    const wrap = document.createElement('span');
+    for (let i = 0; i < 5 && i < pub_key.length; i++) {
+        const nibble = parseInt(pub_key[i], 16);
+        const color = NIBBLE_COLORS[nibble & 7];
+        const s = document.createElement('span');
+        if (nibble & 8) {
+            s.style.backgroundColor = color;
+            s.style.color = '#fff';
+        } else {
+            s.style.color = color;
+        }
+        s.textContent = pub_key[i];
+        wrap.appendChild(s);
+    }
+    wrap.appendChild(document.createTextNode('...'));
+    return wrap;
+}
+
+function coloredPubHtml(pub) {
+    let html = '';
+    for (let i = 0; i < 5 && i < pub.length; i++) {
+        const nibble = parseInt(pub[i], 16);
+        const color  = NIBBLE_COLORS[nibble & 7];
+        if (nibble & 8) {
+            html += `<span style="background:${color};color:#fff;padding:0 1px">${pub[i]}</span>`;
+        } else {
+            html += `<span style="color:${color}">${pub[i]}</span>`;
+        }
+    }
+    return html;
+}
+
+function positionEl(el, cx, cy) {
+    el.style.left = '-9999px';
+    el.style.top  = '-9999px';
+    el.style.display = 'block';
+    const ew = el.offsetWidth, eh = el.offsetHeight;
+    let x = cx + 16, y = cy - 8;
+    if (x + ew > window.innerWidth  - 8) x = cx - ew - 16;
+    if (y + eh > window.innerHeight - 8) y = window.innerHeight - eh - 8;
+    if (y < 8) y = 8;
+    if (x < 8) x = 8;
+    el.style.left = x + 'px';
+    el.style.top  = y + 'px';
+}
+
+function fmt_ts(ts) {
+    return new Date(Math.round(ts / 1000) * 1000).toISOString().replace('T', '-').slice(0, 19) + 'Z';
+}
+
+function apply_hl(el, alpha) {
+    if (alpha < 0.005) {
+        el.style.backgroundColor = '';
+        el.style.boxShadow = '';
+    } else {
+        el.style.backgroundColor = `rgba(255,248,200,${alpha.toFixed(3)})`;
+        el.style.boxShadow = `inset 3px 0 0 rgba(240,192,64,${alpha.toFixed(3)})`;
+    }
+}
+
+function tick_seen() {
+    seen_ticker = null;
+    if (unseen_keys.size === 0 || visible_keys.size === 0 || !win_focused) return;
+    const now = performance.now();
+    const delta = Math.min(now - (tick_seen.last || now), 200);
+    tick_seen.last = now;
+    const done = [];
+    for (const key of visible_keys) {
+        if (!unseen_keys.has(key)) { done.push(key); continue; }
+        if (pending_notif_tags.has(key)) {
+            navigator.serviceWorker?.controller?.postMessage({ type: 'close_tag', tag: key });
+            pending_notif_tags.delete(key);
+        }
+        const accum = Math.min((seen_accum.get(key) || 0) + delta, 10000);
+        seen_accum.set(key, accum);
+        const el = unseen_els.get(key);
+        if (el) apply_hl(el, 1 - accum / 10000);
+        if (accum >= 10000) done.push(key);
+    }
+    for (const key of done) {
+        unseen_keys.delete(key);
+        seen_accum.delete(key);
+        visible_keys.delete(key);
+        const el = unseen_els.get(key);
+        if (el) apply_hl(el, 0);
+        unseen_els.delete(key);
+    }
+    if (unseen_keys.size > 0 && visible_keys.size > 0 && win_focused)
+        seen_ticker = requestAnimationFrame(tick_seen);
+}
+
+function start_seen_tick() {
+    if (seen_ticker || unseen_keys.size === 0 || visible_keys.size === 0 || !win_focused) return;
+    tick_seen.last = performance.now();
+    seen_ticker = requestAnimationFrame(tick_seen);
+}
+
+function setup_unseen_io() {
+    if (unseen_io) unseen_io.disconnect();
+    visible_keys = new Set();
+    if (unseen_keys.size === 0) { unseen_io = null; return; }
+    unseen_io = new IntersectionObserver(entries => {
+        let changed = false;
+        for (const e of entries) {
+            const key = e.target.dataset.msgKey;
+            if (!key || !unseen_keys.has(key)) continue;
+            if (e.isIntersecting) { visible_keys.add(key); changed = true; }
+            else visible_keys.delete(key);
+        }
+        if (changed) start_seen_tick();
+    }, { threshold: 0.1 });
+    for (const [, el] of unseen_els)
+        if (el.isConnected) unseen_io.observe(el);
+}
+
+// Matches URLs (scheme://...) or 64-hex-char hashes in isolation.
+const URL_RE = /([a-zA-Z][a-zA-Z0-9+\-.]*:\/\/[^\s<>"]*[^\s<>".,:;!?()'"])|(\b[0-9a-fA-F]{64}\b)/g;
+
+function append_text_with_links(el, text) {
+    let last = 0, m;
+    URL_RE.lastIndex = 0;
+    while ((m = URL_RE.exec(text)) !== null) {
+        if (m.index > last) el.appendChild(document.createTextNode(text.slice(last, m.index)));
+        const a = document.createElement('a');
+        if (m[1]) {
+            a.href = m[1];
+            a.textContent = m[1];
+        } else {
+            a.href = '/' + m[2];
+            a.textContent = m[2];
+        }
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        el.appendChild(a);
+        last = m.index + m[0].length;
+    }
+    if (last < text.length) el.appendChild(document.createTextNode(text.slice(last)));
+}
+
+// ---- syntax highlighting ------------------------------------------------
+
+const RUST_KW = new Set('as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while'.split(' '));
+const RUST_TY = new Set('bool char f32 f64 i8 i16 i32 i64 i128 isize str u8 u16 u32 u64 u128 usize String Vec Box Rc Arc Option Result Some None Ok Err HashMap BTreeMap HashSet'.split(' '));
+
+function hl_escape(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+const RUST_RE = /\/\/[^\n]*|\/\*[\s\S]*?\*\/|r#*"[\s\S]*?"#*|b?"(?:[^"\\]|\\.)*"|b?'(?:[^'\\]|\\.)'|#!?\[[^\]]*\]|'[a-zA-Z_]\w*|[a-zA-Z_]\w*!|\b0x[0-9a-fA-F_]+\w*|\b0b[01_]+\w*|\b0o[0-7_]+\w*|\b\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?\w*|[A-Z]\w*|[a-z_]\w*/g;
+
+function tok_classify_rust(t, nx) {
+    if (t[0]==='/') return 'cm';
+    if (t[0]==='"' || (t[0]==='b'&&(t[1]==='"'||t[1]==="'")) || t.startsWith('r"') || t.startsWith('r#')) return 'st';
+    if (t[0]==="'" && t[t.length-1]==="'" && t.length>=3) return 'st';
+    if (t[0]==="'") return 'lt';
+    if (t[0]==='#') return 'at';
+    if (t[t.length-1]==='!') return 'mc';
+    if (/^\d/.test(t)) return 'nm';
+    if (/^[A-Z]/.test(t)) return 'ty';
+    if (RUST_KW.has(t)) return 'kw';
+    if (RUST_TY.has(t)) return 'ty';
+    if (nx==='(') return 'fn';
+    return '';
+}
+
+function tokenize(code, re, classify_fn) {
+    const out = [];
+    let last = 0, m;
+    re.lastIndex = 0;
+    while ((m = re.exec(code)) !== null) {
+        if (m.index > last) out.push(['', code.slice(last, m.index)]);
+        out.push([classify_fn(m[0], code[m.index + m[0].length] || ''), m[0]]);
+        last = m.index + m[0].length;
+    }
+    if (last < code.length) out.push(['', code.slice(last)]);
+    return out;
+}
+
+const JS_KW    = new Set('break case catch class const continue debugger default delete do else export extends false finally for function if import in instanceof let new null return static super switch this throw true try typeof undefined var void while with yield async await of'.split(' '));
+const PY_KW    = new Set('False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield'.split(' '));
+const SH_KW    = new Set('if then else elif fi for while do done case esac function in return export local readonly'.split(' '));
+const CLIKE_KW = new Set('if else for while do return break continue switch case default struct enum class typedef void int long short float double bool char unsigned signed true false null nullptr NULL new delete sizeof typeof'.split(' '));
+
+function get_kw(lang) {
+    if (/^(js|javascript|ts|typescript)$/.test(lang)) return JS_KW;
+    if (/^(py|python)$/.test(lang)) return PY_KW;
+    if (/^(sh|bash|shell|zsh)$/.test(lang)) return SH_KW;
+    return new Set();
+}
+
+function toks_to_html(toks) {
+    return toks.map(([cls,t]) => cls ? `<span class="hl-${cls}">${hl_escape(t)}</span>` : hl_escape(t)).join('');
+}
+
+const CLIKE_RE = /\/\/[^\n]*|\/\*[\s\S]*?\*\/|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\b\d[\d.]*(?:[eE][+-]?\d+)?\w*|\b[a-zA-Z_]\w*/g;
+
+function highlight_code(code, lang) {
+    if (!lang || lang==='text' || lang==='plain') return hl_escape(code);
+    if (lang==='rust' || lang==='rs') return toks_to_html(tokenize(code, RUST_RE, tok_classify_rust));
+    if (/^(c-like|c|cpp|c\+\+|java|go|swift|kotlin|cs|csharp)$/.test(lang)) {
+        return toks_to_html(tokenize(code, CLIKE_RE, (t, nx) => {
+            if (t.startsWith('//')||t.startsWith('/*')) return 'cm';
+            if (t[0]==='"'||t[0]==="'") return 'st';
+            if (/^\d/.test(t)) return 'nm';
+            if (CLIKE_KW.has(t)) return 'kw';
+            if (/^[A-Z][A-Z0-9_]*$/.test(t)) return 'ty'; // ALL_CAPS constant
+            if (/^[A-Z]/.test(t)) return 'ty';
+            if (nx==='(') return 'fn';
+            return '';
+        }));
+    }
+    const hash_cm = /^(py|python|rb|ruby|sh|bash|shell|zsh|toml|yaml|yml)$/.test(lang);
+    const rp = ['\\/\\/[^\\n]*', '\\/\\*[\\s\\S]*?\\*\\/'];
+    if (hash_cm) rp.push('#[^\\n]*');
+    rp.push('"(?:[^"\\\\]|\\\\.)*"', "'(?:[^'\\\\]|\\\\.)*'", '\\b\\d[\\d.]*\\b', '[a-zA-Z_]\\w*');
+    const re = new RegExp(rp.join('|'), 'g');
+    const kw = get_kw(lang);
+    return toks_to_html(tokenize(code, re, (t, nx) => {
+        if (t.startsWith('//')||t.startsWith('/*')||(hash_cm&&t[0]==='#')) return 'cm';
+        if (t[0]==='"'||t[0]==="'") return 'st';
+        if (/^\d/.test(t)) return 'nm';
+        if (kw.has(t)) return 'kw';
+        if (/^[A-Z]/.test(t)) return 'ty';
+        if (nx==='(') return 'fn';
+        return '';
+    }));
+}
+
+function detect_lang(hint, code) {
+    if (hint) {
+        const MAP = {rs:'rust',js:'javascript',ts:'typescript',py:'python',sh:'sh',bash:'sh',zsh:'sh',shell:'sh'};
+        const h = hint.toLowerCase().trim();
+        return MAP[h] || h;
+    }
+    if (/\bfn\s+\w+\s*[(<]|\blet\s+(?:mut\s+)?\w+\s*[=:]|\bimpl\b|\buse\s+\w+::|#\[/.test(code)) return 'rust';
+    if (/\bdef\s+\w+\s*\(|\bimport\s+\w+|\belif\b/.test(code)) return 'python';
+    if (/\bconst\s+\w+\s*=|\bfunction\s+\w+\s*\(|\blet\s+\w+\s*=.*=>/.test(code)) return 'javascript';
+    if (/^\s*#!\/|^\$ /.test(code)) return 'sh';
+    if (/\{[\s\S]*?\}/.test(code)) return 'c-like';
+    return 'text';
+}
+
+function parse_message(text) {
+    const segs = [];
+    const block_re = /```([^\n`]*)\n([\s\S]*?)```/g;
+    let last = 0, m;
+    while ((m = block_re.exec(text)) !== null) {
+        if (m.index > last) segs.push(...parse_inline_text(text.slice(last, m.index)));
+        segs.push({type:'code_block', lang:m[1].trim(), code:m[2]});
+        last = m.index + m[0].length;
+    }
+    if (last < text.length) segs.push(...parse_inline_text(text.slice(last)));
+    return segs;
+}
+
+function parse_inline_text(text) {
+    const segs = [];
+    const re = /`([^`\n]+)`/g;
+    let last = 0, m;
+    while ((m = re.exec(text)) !== null) {
+        if (m.index > last) segs.push({type:'text', text:text.slice(last, m.index)});
+        segs.push({type:'inline_code', code:m[1]});
+        last = m.index + m[0].length;
+    }
+    if (last < text.length) segs.push({type:'text', text:text.slice(last)});
+    return segs;
+}
+
+function render_message_text(row, msg_text) {
+    let span = document.createElement('span');
+    span.className = 'msg-text';
+    span.appendChild(document.createTextNode(': '));
+    row.appendChild(span);
+    for (const seg of parse_message(msg_text)) {
+        if (seg.type === 'code_block') {
+            span = null;
+            const lang = detect_lang(seg.lang, seg.code);
+            const pre = document.createElement('pre');
+            pre.className = 'code-block';
+            if (lang && lang !== 'text') {
+                const lbl = document.createElement('span');
+                lbl.className = 'code-lang';
+                lbl.textContent = lang;
+                pre.appendChild(lbl);
+            }
+            const btn = document.createElement('button');
+            btn.className = 'copy-btn';
+            btn.title = 'Copy code';
+            btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="4" y="0" width="9" height="9" rx="1.5"/><rect x="0" y="4" width="9" height="9" rx="1.5" fill="#f3f3f3"/></svg>';
+            const raw = seg.code;
+            btn.onclick = () => {
+                const do_copy = () => { btn.classList.add('copied'); setTimeout(() => btn.classList.remove('copied'), 1800); };
+                if (navigator.clipboard) {
+                    navigator.clipboard.writeText(raw).then(do_copy).catch(() => {});
+                } else {
+                    const ta = document.createElement('textarea');
+                    ta.value = raw; ta.style.cssText = 'position:fixed;opacity:0';
+                    document.body.appendChild(ta); ta.select(); document.execCommand('copy');
+                    document.body.removeChild(ta); do_copy();
+                }
+            };
+            pre.appendChild(btn);
+            const ce = document.createElement('code');
+            ce.innerHTML = highlight_code(seg.code, lang);
+            pre.appendChild(ce);
+            row.appendChild(pre);
+        } else {
+            if (!span) { span = document.createElement('span'); span.className = 'msg-text'; row.appendChild(span); }
+            if (seg.type === 'inline_code') {
+                const c = document.createElement('code'); c.className = 'ic'; c.textContent = seg.code; span.appendChild(c);
+            } else {
+                append_text_with_links(span, seg.text);
+            }
+        }
+    }
+}
+
+// -------------------------------------------------------------------------
+
+function open_single_peer_popup(pub, cx, cy) {
+    const popup = document.getElementById('peer-popup');
+    popup_refresh_delivered = null;
+
+    popup.innerHTML =
+        `<span class="pp-close" id="pp-close">&#x2715;</span>` +
+        `<b>ed25519</b><br>${coloredPubHtml(pub)}${pub.slice(5)}<br>` +
+        `<span id="pp-ping" class="pp-chat" style="cursor:pointer;">&#x1F4E1; ping &rarr;</span><br>` +
+        `<a href="chat.html?ed25519=${encodeURIComponent(pub)}" class="pp-chat" onclick="event.preventDefault();window.open(this.href,'_blank','width=1000,height=720,noopener,noreferrer')">&#x1F4AC; chat &rarr;</a>` +
+        `<br><a href="pong.html?ed25519=${encodeURIComponent(pub)}" class="pp-chat" onclick="event.preventDefault();window.open(this.href,'_blank','width=1000,height=720,noopener,noreferrer')">&#x1F3D3; pong &rarr;</a>` +
+        `<br><a href="video.html?ed25519=${encodeURIComponent(pub)}" class="pp-chat" onclick="event.preventDefault();window.open(this.href,'_blank','width=1000,height=720,noopener,noreferrer')">&#x1F4F9; video &rarr;</a>` +
+        `<br><a href="http://127.0.0.1:24255/latest/${encodeURIComponent(pub)}/" target="_blank" class="pp-chat">&#x1F3E0; home page &rarr;</a>`;
+
+    positionEl(popup, cx, cy);
+    document.getElementById('pp-close').onclick = () => { popup.style.display = 'none'; };
+    document.getElementById('pp-ping').onclick = () => { send_ping(pub); popup.style.display = 'none'; };
+}
+
+function open_delivered_popup(timestamp, cx, cy) {
+    const popup = document.getElementById('peer-popup');
+
+    function delivered_pubs() {
+        const dl = delivered_map.get(timestamp);
+        return dl && dl.size > 0 ? [...dl] : [];
+    }
+
+    function build_list_html(pubs) {
+        if (pubs.length === 0) return '<i style="color:#888">none yet</i>';
+        let h = '';
+        for (let i = 0; i < pubs.length; i++)
+            h += `<span class="pub-key-btn" data-dp-peer="${i}" style="cursor:pointer;">${coloredPubHtml(pubs[i])}${pubs[i].slice(5)}</span><br>`;
+        return h;
+    }
+
+    function bind_clicks(pubs) {
+        for (let i = 0; i < pubs.length; i++) {
+            const pub = pubs[i];
+            const el = popup.querySelector(`[data-dp-peer="${i}"]`);
+            if (el) el.onclick = e => { e.stopPropagation(); open_single_peer_popup(pub, e.clientX, e.clientY); };
+        }
+    }
+
+    const initial_pubs = delivered_pubs();
+    popup.innerHTML =
+        `<span class="pp-close" id="pp-close">&#x2715;</span>` +
+        `<b>delivered to</b><br>` +
+        `<span id="pp-delivered-list">${build_list_html(initial_pubs)}</span>`;
+
+    positionEl(popup, cx, cy);
+    bind_clicks(initial_pubs);
+    document.getElementById('pp-close').onclick = () => { popup.style.display = 'none'; popup_refresh_delivered = null; };
+    popup_refresh_delivered = () => {
+        const el = document.getElementById('pp-delivered-list');
+        if (el) {
+            const pubs = delivered_pubs();
+            el.innerHTML = build_list_html(pubs);
+            bind_clicks(pubs);
+        }
+    };
+}
+
+function open_peer_list_popup(cx, cy) {
+    const popup = document.getElementById('peer-popup');
+    const peers = [...known_peers];
+    popup_refresh_delivered = null;
+
+    let html = `<span class="pp-close" id="pp-close">&#x2715;</span><b>${peers.length} peer${peers.length !== 1 ? 's' : ''}</b>`;
+    if (peers.length === 0) {
+        html += '<br><i style="color:#888">none connected</i>';
+    } else {
+        for (let i = 0; i < peers.length; i++) {
+            html += `<br><span class="pub-key-btn" data-pp-peer="${i}" style="cursor:pointer;">${coloredPubHtml(peers[i])}${peers[i].slice(5)}</span>`;
+        }
+    }
+    popup.innerHTML = html;
+    positionEl(popup, cx, cy);
+    document.getElementById('pp-close').onclick = () => { popup.style.display = 'none'; };
+    for (let i = 0; i < peers.length; i++) {
+        const pub = peers[i];
+        popup.querySelector(`[data-pp-peer="${i}"]`).onclick = e => {
+            e.stopPropagation();
+            open_single_peer_popup(pub, e.clientX, e.clientY);
+        };
+    }
+}
+
+function render_messages() {
+    const msgs = load_messages().sort((a, b) => a.timestamp - b.timestamp);
+    const container = document.getElementById('messages');
+    const at_bottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 30;
+    container.innerHTML = '';
+    unseen_els.clear();
+    undelivered_els.clear();
+    for (const m of msgs) {
+        const row = document.createElement('div');
+        row.className = 'msg-row';
+        row.dataset.msgId = m.pub_key + ':' + m.timestamp;
+
+        const meta = document.createElement('span');
+        meta.className = 'msg-meta';
+
+        const ts_span = document.createElement('span');
+        ts_span.textContent = '[' + fmt_ts(m.timestamp) + '] ';
+
+        const key_link = document.createElement('span');
+        key_link.className = 'pub-key-btn';
+        key_link.title = m.pub_key;
+        key_link.appendChild(colored_pub_prefix(m.pub_key));
+        key_link.onclick = function(e) {
+            e.stopPropagation();
+            open_single_peer_popup(m.pub_key, e.clientX, e.clientY);
+        };
+
+        meta.appendChild(ts_span);
+        meta.appendChild(key_link);
+        const display_nick = m.nickname || (m.pub_key === my_ed25519 ? nick_input.value.trim() : '');
+        if (display_nick) {
+            const nick_span = document.createElement('span');
+            nick_span.style.cssText = 'color:#666;font-weight:normal;margin-left:4px;';
+            nick_span.textContent = '(' + display_nick + ')';
+            meta.appendChild(nick_span);
+        }
+
+        row.appendChild(meta);
+        if (m.reply_to) {
+            const rq = m.reply_to;
+            const quote = document.createElement('span');
+            quote.className = 'reply-quote';
+            const qPub = document.createElement('span');
+            qPub.innerHTML = coloredPubHtml(rq.pub_key) + '...';
+            quote.appendChild(qPub);
+            const qTs = document.createElement('span');
+            qTs.style.color = '#888';
+            qTs.textContent = ' [' + fmt_ts(rq.timestamp) + '] ';
+            quote.appendChild(qTs);
+            const qPreview = (rq.action ? '*' + rq.action : rq.text) || '';
+            quote.appendChild(document.createTextNode(qPreview.slice(0, 30) + (qPreview.length > 30 ? '…' : '')));
+            (function(rq_) {
+                quote.onclick = function(e) {
+                    e.stopPropagation();
+                    const targetEl = document.querySelector(`[data-msg-id="${rq_.pub_key}:${rq_.timestamp}"]`);
+                    if (targetEl) {
+                        targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        targetEl.style.outline = '2px solid #3a7bd5';
+                        setTimeout(() => { targetEl.style.outline = ''; }, 1500);
+                    } else {
+                        const next = quote.nextElementSibling;
+                        if (next && next.classList.contains('reply-expand')) {
+                            next.remove();
+                        } else {
+                            const exp = document.createElement('div');
+                            exp.className = 'reply-expand';
+                            const ePub = document.createElement('span');
+                            ePub.innerHTML = coloredPubHtml(rq_.pub_key) + '... ';
+                            const eTs = document.createElement('span');
+                            eTs.style.color = '#888';
+                            eTs.textContent = '[' + fmt_ts(rq_.timestamp) + '] ';
+                            exp.appendChild(ePub);
+                            exp.appendChild(eTs);
+                            exp.appendChild(document.createTextNode(rq_.action ? '*' + rq_.action : (rq_.text || '')));
+                            quote.parentNode.insertBefore(exp, quote.nextSibling);
+                        }
+                    }
+                };
+            })(rq);
+            row.appendChild(quote);
+        }
+        if (m.action) {
+            const as_ = document.createElement('span');
+            as_.className = 'msg-action';
+            append_text_with_links(as_, ' ' + m.action);
+            row.appendChild(as_);
+        } else {
+            render_message_text(row, m.text);
+        }
+        if (m.image_hash) {
+            if (m.media_type === 'video') {
+                const vid = document.createElement('video');
+                vid.className = 'msg-video';
+                vid.src = GC_BASE + '/blake3/' + m.image_hash;
+                vid.controls = true;
+                vid.muted = true;
+                if (gc_autoplay_video) vid.autoplay = true;
+                row.appendChild(vid);
+            } else {
+                const img = document.createElement('img');
+                img.className = 'msg-img';
+                img.src = GC_BASE + '/blake3/' + m.image_hash;
+                img.alt = 'image';
+                img.onclick = () => window.open(GC_BASE + '/blake3/' + m.image_hash, '_blank');
+                row.appendChild(img);
+            }
+        }
+        const k = m.pub_key + ':' + m.timestamp;
+        if (unseen_keys.has(k)) {
+            row.dataset.msgKey = k;
+            apply_hl(row, 1 - (seen_accum.get(k) || 0) / 10000);
+            unseen_els.set(k, row);
+        }
+        if (m.pub_key === my_ed25519) {
+            const dl = delivered_map.get(m.timestamp);
+            const count = dl ? dl.size : 0;
+            const mark = document.createElement('span');
+            mark.textContent = String(count);
+            mark.style.cssText = `cursor:pointer;color:#fff;font-weight:normal;margin-left:3px;padding:0 3px;border-radius:3px;background:${count === 0 ? '#c00' : '#3a3'};`;
+            (function(ts) {
+                mark.onclick = function(e) { e.stopPropagation(); open_delivered_popup(ts, e.clientX, e.clientY); };
+            })(m.timestamp);
+            meta.appendChild(mark);
+            undelivered_els.set(m.timestamp, mark);
+        }
+        const reply_btn = document.createElement('span');
+        reply_btn.className = 'msg-reply-btn';
+        reply_btn.textContent = '↩';
+        reply_btn.title = 'Reply';
+        (function(m_) {
+            reply_btn.onclick = function(e) { e.stopPropagation(); show_reply_bar(m_); };
+        })(m);
+        meta.appendChild(reply_btn);
+        container.appendChild(row);
+    }
+    if (at_bottom) container.scrollTop = container.scrollHeight;
+    update_scroll_btn();
+    setup_unseen_io();
+}
+
+function my_msgs() {
+    return load_messages().filter(m => m.pub_key === my_ed25519);
+}
+
+function send_to_peer(peer_pub) {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    const msgs = my_msgs().slice().reverse(); // newest to oldest
+    if (msgs.length === 0) return;
+
+    const make_msg = m => {
+        const gcm = { group_name: m.group_name, text: m.text, timestamp: m.timestamp };
+        if (m.action) gcm.action = m.action;
+        const cur_nick = nick_input.value.trim(); if (cur_nick) gcm.nickname = cur_nick;
+        if (m.image_hash) { gcm.image_hash = m.image_hash; if (m.media_type) gcm.media_type = m.media_type; }
+        if (m.reply_to) gcm.reply_to = m.reply_to;
+        return {GroupChatMessage: gcm};
+    };
+    const make_payload = batch => JSON.stringify([{Forward:{
+        to_ed25519: peer_pub,
+        messages: batch.map(make_msg)
+    }}]);
+
+    let batch = [], sent_bytes = 0;
+    for (const m of msgs) {
+        batch.push(m);
+        if (make_payload(batch).length >= 4096) {
+            batch.pop();
+            if (batch.length > 0) {
+                const p = make_payload(batch); socket.send(p); sent_bytes += p.length;
+                batch = [m];
+            } else {
+                const p = make_payload([m]); socket.send(p); sent_bytes += p.length;
+                batch = [];
+            }
+        }
+    }
+    if (batch.length > 0) { const p = make_payload(batch); socket.send(p); sent_bytes += p.length; }
+    if (sent_bytes > 0)
+        document.getElementById('sent_kb').textContent = 'sent ' + (sent_bytes / 1024).toFixed(1) + ' kB';
+}
+
+function send_to_all_peers() {
+    for (const peer of known_peers) {
+        send_to_peer(peer);
+    }
+}
+
+function send_ping(peer_pub) {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    ping_pending = true;
+    const ts = Date.now();
+    socket.send(JSON.stringify([{Forward: {to_ed25519: peer_pub, messages: [{GroupChatPing: {timestamp: ts}}]}}]));
+}
+
+function show_pong_notification(from_pub, rtt_ms) {
+    if (!ping_pending) return;
+    ping_pending = false;
+    const div = document.createElement('div');
+    div.style.cssText = 'position:fixed;bottom:70px;right:16px;background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:10px 14px;font-size:12px;font-family:monospace;box-shadow:0 4px 16px rgba(0,0,0,0.18);z-index:300;max-width:320px;';
+    const inner = document.createElement('div');
+    inner.innerHTML = `<b>pong</b> from ${coloredPubHtml(from_pub)}...<br>RTT: ${rtt_ms}ms`;
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = 'OK';
+    closeBtn.style.cssText = 'display:block;margin-top:6px;font-size:11px;padding:2px 10px;cursor:pointer;';
+    closeBtn.onclick = () => div.remove();
+    div.appendChild(inner);
+    div.appendChild(closeBtn);
+    document.body.appendChild(div);
+    setTimeout(() => { if (div.parentNode) div.remove(); }, 15000);
+}
+
+function reactive_send_allowed() {
+    const now = Date.now();
+    if (now - last_reactive_send_ms >= 3000) { last_reactive_send_ms = now; return true; }
+    return false;
+}
+
+function send_gc_update_to(peer_pub) {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify([{ Forward: {
+        to_ed25519: peer_pub,
+        messages: [{ GroupChatUpdate: {} }],
+    }}]));
+    greeted_peers.add(peer_pub);
+}
+
+function greet_new_peers() {
+    for (const p of known_peers) {
+        if (!greeted_peers.has(p)) send_gc_update_to(p);
+    }
+}
+
+function schedule_backoff() {
+    clearTimeout(backoff_timer);
+    backoff_delay = 500;
+    tick_backoff();
+}
+
+function tick_backoff() {
+    backoff_timer = setTimeout(() => {
+        send_to_all_peers();
+        backoff_delay *= 1.5;
+        tick_backoff();
+    }, backoff_delay);
+}
+
+async function fetch_status() {
+    try {
+        const r = await fetch('/status.json');
+        const data = await r.json();
+        if (!my_ed25519 && data.public_key) {
+            my_ed25519 = strip_0x(data.public_key);
+            on_identity_known();
+        }
+        const peers = (data.active_peers || [])
+            .map(p => strip_0x(p.pub));
+        known_peers = new Set(peers);
+        document.getElementById('peer_count').textContent = known_peers.size;
+        for (const p of peers) {
+            if (!greeted_peers.has(p)) send_gc_update_to(p);
+        }
+    } catch(e) {}
+}
+
+// -- notifications -------------------------------------------------------
+const original_title = document.title;
+let blink_timer = null;
+
+function start_blink() {
+    if (blink_timer) return;
+    let on = true;
+    blink_timer = setInterval(() => {
+        document.title = on ? '(new message) ' + original_title : original_title;
+        on = !on;
+    }, 1000);
+}
+
+function stop_blink() {
+    clearInterval(blink_timer);
+    blink_timer = null;
+    document.title = original_title;
+}
+
+let win_focused = document.hasFocus();
+window.addEventListener('focus', () => { win_focused = true;  stop_blink(); start_seen_tick(); });
+window.addEventListener('blur',  () => { win_focused = false; });
+
+document.addEventListener('click', e => {
+    const popup = document.getElementById('peer-popup');
+    if (popup && !popup.contains(e.target)) { popup.style.display = 'none'; popup_refresh_delivered = null; }
+});
+
+// Tauri IPC -- present on Android (Tauri APK), null in a plain browser.
+const tauri_invoke =
+    window.__TAURI_INTERNALS__?.invoke?.bind(window.__TAURI_INTERNALS__) ??
+    window.__TAURI__?.core?.invoke?.bind(window.__TAURI__.core) ??
+    null;
+function tauri_notif(cmd, args) { return tauri_invoke('plugin:notification|' + cmd, args ?? {}); }
+
+
+const LS_NOTIF_OFF = 'gc_notif_off';
+function notif_user_wants() { return localStorage.getItem(LS_NOTIF_OFF) !== 'true'; }
+
+async function notif_os_granted() {
+    try {
+        if (tauri_invoke) return await tauri_notif('is_permission_granted');
+        if ('Notification' in window) return Notification.permission === 'granted';
+    } catch(e) {}
+    return false;
+}
+
+async function notif_active() { return notif_user_wants() && await notif_os_granted(); }
+
+async function notif_request() {
+    try {
+        if (tauri_invoke) return (await tauri_notif('request_permission')) === 'granted';
+        if ('Notification' in window) return (await Notification.requestPermission()) === 'granted';
+    } catch(e) { throw e; }
+    return false;
+}
+
+function notif_send(title, body, tag) {
+    if (tauri_invoke) {
+        tauri_notif('notify', { options: { title, body } });
+        return;
+    }
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    // Service worker notifications are not suppressed by Chromium when another tab has focus.
+    // Direct new Notification() is suppressed in that case.
+    const ctrl = navigator.serviceWorker?.controller;
+    if (ctrl) {
+        ctrl.postMessage({ type: 'notify', title, body, tag });
+    } else {
+        new Notification(title, tag ? { body, tag } : { body });
+    }
+}
+
+async function notify_new(msgs) {
+    if (!tauri_invoke && win_focused && !document.hidden) return;
+    start_blink();
+    if (await notif_active()) {
+        const m = msgs.reduce((a, b) => a.timestamp > b.timestamp ? a : b);
+        const tag = m.pub_key + ':' + m.timestamp;
+        pending_notif_tags.add(tag);
+        notif_send('Group Chat', m.pub_key.substring(0, 12) + '...: ' + m.text.substring(0, 100), tag);
+    }
+}
+
+const notif_btn = document.getElementById('notif_btn');
+
+async function update_notif_btn() {
+    try {
+        if (!tauri_invoke && !('Notification' in window)) {
+            notif_btn.textContent = 'Notifications not supported'; notif_btn.disabled = true; return;
+        }
+        if (!tauri_invoke && 'Notification' in window && Notification.permission === 'denied') {
+            notif_btn.textContent = 'Notifications blocked by browser'; notif_btn.disabled = true; return;
+        }
+        const os_granted = await notif_os_granted();
+        if (os_granted && notif_user_wants()) {
+            notif_btn.textContent = 'Notifications on -- tap to disable';
+        } else if (os_granted && !notif_user_wants()) {
+            notif_btn.textContent = 'Notifications off -- tap to enable';
+        } else {
+            notif_btn.textContent = 'Enable notifications';
+        }
+        notif_btn.disabled = false;
+    } catch(e) { notif_btn.textContent = 'Notif err: ' + e; }
+}
+update_notif_btn();
+
+notif_btn.onclick = async () => {
+    try {
+        if (await notif_active()) {
+            // Currently on -- turn off
+            localStorage.setItem(LS_NOTIF_OFF, 'true');
+            notif_btn.textContent = 'Notifications off -- tap to enable';
+            return;
+        }
+        // Currently off -- turn on
+        localStorage.removeItem(LS_NOTIF_OFF);
+        const already = await notif_os_granted();
+        if (already) {
+            notif_btn.textContent = 'Notifications on -- tap to disable';
+            notif_send('Group Chat', 'Notifications enabled');
+            return;
+        }
+        notif_btn.textContent = 'Requesting...';
+        const granted = await notif_request();
+        if (granted) {
+            notif_btn.textContent = 'Notifications on -- tap to disable';
+            notif_send('Group Chat', 'Notifications enabled');
+        } else {
+            notif_btn.textContent = 'Permission denied';
+        }
+    } catch(e) {
+        notif_btn.textContent = 'Error: ' + e;
+    }
+};
+
+function connect() {
+    if (window.__TAURI__) {
+        socket = new WebSocket('ws://localhost:24255/wt');
+    } else {
+        const url = new URL('/wt', window.location.href);
+        url.protocol = url.protocol.replace('http', 'ws');
+        socket = new WebSocket(url);
+    }
+    socket.onclose = () => {
+        document.getElementById('status_text').textContent = 'Disconnected -- reconnecting...';
+        ws_connect_time = null;
+        clearInterval(ws_uptime_timer);
+        ws_uptime_timer = null;
+        document.getElementById('ws_uptime').textContent = '';
+        greeted_peers.clear();
+        setTimeout(connect, 200);
+    };
+    socket.onopen = () => {
+        document.getElementById('status_text').textContent = 'Connected';
+        ws_connect_time = Date.now();
+        clearInterval(ws_uptime_timer);
+        update_ws_uptime();
+        ws_uptime_timer = setInterval(update_ws_uptime, 1000);
+        schedule_backoff();
+        greet_new_peers();
+        socket.onmessage = (event) => {
+            let outer;
+            try { outer = JSON.parse(event.data); } catch(e) { return; }
+            let messages, forwarded = false, src = null, might_be_ip_spoofing;
+            if (outer[0] && 'Forwarded' in outer[0]) {
+                src = strip_0x(outer[0].Forwarded.from_ed25519);
+                might_be_ip_spoofing = outer[0].Forwarded.might_be_ip_spoofing;
+                forwarded = true;
+                try { messages = JSON.parse(outer[0].Forwarded.messages); } catch(e) { return; }
+            } else {
+                messages = outer;
+            }
+            const chat_msgs = [];
+            for (const msg of messages) {
+                if (forwarded && 'GroupChatMessage' in msg) {
+                    const gcm = msg.GroupChatMessage;
+                    if (gcm.group_name === GROUP_NAME) {
+                        const entry = { pub_key: src, text: gcm.text, timestamp: gcm.timestamp, group_name: gcm.group_name };
+                        if (gcm.action) entry.action = gcm.action;
+                        if (gcm.nickname) entry.nickname = gcm.nickname;
+                        if (gcm.image_hash) { entry.image_hash = gcm.image_hash; if (gcm.media_type) entry.media_type = gcm.media_type; }
+                        if (gcm.reply_to) entry.reply_to = gcm.reply_to;
+                        chat_msgs.push(entry);
+                    }
+                } else if (forwarded && 'GroupChatDelivered' in msg) {
+                    const gcd = msg.GroupChatDelivered;
+                    if (gcd.group_name === GROUP_NAME) {
+                        if (!delivered_map.has(gcd.timestamp)) delivered_map.set(gcd.timestamp, new Set());
+                        delivered_map.get(gcd.timestamp).add(src);
+                        save_delivered();
+                        if (popup_refresh_delivered) popup_refresh_delivered();
+                        const uel = undelivered_els.get(gcd.timestamp);
+                        if (uel) {
+                            const count = delivered_map.get(gcd.timestamp).size;
+                            uel.textContent = String(count);
+                            uel.style.background = count === 0 ? '#c00' : '#3a3';
+                        }
+                    }
+                } else if (forwarded && 'GroupChatPing' in msg) {
+                    socket.send(JSON.stringify([{Forward: {to_ed25519: src, messages: [{GroupChatPong: {timestamp: msg.GroupChatPing.timestamp}}]}}]));
+                    if (might_be_ip_spoofing === false && reactive_send_allowed()) send_to_peer(src);
+                } else if (forwarded && 'GroupChatPong' in msg) {
+                    show_pong_notification(src, Date.now() - msg.GroupChatPong.timestamp);
+                } else if (forwarded && 'GroupChatUpdate' in msg) {
+                    if (might_be_ip_spoofing === false && reactive_send_allowed()) send_to_peer(src);
+                }
+            }
+            if (chat_msgs.length > 0) {
+                const added = add_messages(chat_msgs);
+                if (added.length > 0 && src) {
+                    if (my_ed25519) {
+                        const receipts = added.map(m => ({GroupChatDelivered: {group_name: GROUP_NAME, timestamp: m.timestamp}}));
+                        socket.send(JSON.stringify([{Forward: {to_ed25519: src, messages: receipts}}]));
+                    }
+                    if (might_be_ip_spoofing === false && reactive_send_allowed()) send_to_peer(src);
+                }
+            }
+        };
+    };
+}
+
+function on_identity_known() {
+    const el = document.getElementById('my_pub_display');
+    el.textContent = my_ed25519.substring(0, 16) + '...';
+    el.title = my_ed25519;
+    document.getElementById('msg_input').disabled = false;
+    document.getElementById('send_btn').disabled = false;
+    render_messages();
+}
+
+const IRC_SHORTHANDS = {
+    wave:'waves', shrug:'shrugs', nod:'nods', laugh:'laughs',
+    facepalm:'facepalms', cry:'cries', bow:'bows', hug:'hugs',
+    dance:'dances', clap:'claps', cheer:'cheers', sigh:'sighs',
+};
+
+function send_message() {
+    const input = document.getElementById('msg_input');
+    const raw = input.value.trim();
+    if (!raw && !gc_pending_image_hash) return;
+    if (gc_pending_image_uploading) return;
+    let text = raw, action = null;
+    if (raw.startsWith('/me ') && raw.length > 4) {
+        action = raw.slice(4);
+        text = '';
+    } else if (/^\/\w+$/.test(raw)) {
+        const cmd = raw.slice(1).toLowerCase();
+        if (IRC_SHORTHANDS[cmd]) { action = IRC_SHORTHANDS[cmd]; text = ''; }
+    }
+    const m = { pub_key: my_ed25519, text, timestamp: Date.now(), group_name: GROUP_NAME };
+    if (action) m.action = action;
+    if (gc_pending_image_hash) { m.image_hash = gc_pending_image_hash; if (gc_pending_media_type === 'video') m.media_type = 'video'; }
+    if (gc_pending_reply) { const r = Object.assign({}, gc_pending_reply); delete r.reply_to; m.reply_to = r; }
+    add_messages([m]);
+    input.value = '';
+    gc_clear_image();
+    hide_reply_bar();
+    send_to_all_peers();
+}
+
+document.getElementById('send_btn').onclick = send_message;
+document.getElementById('msg_input').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); send_message(); }
+});
+
+// ---- image attach ----
+function gc_upload_image(file) {
+    gc_pending_image_uploading = true;
+    gc_pending_image_hash = null;
+    document.getElementById('gc-img-status').textContent = 'uploading…';
+    const xhr = new XMLHttpRequest();
+    xhr.upload.addEventListener('progress', e => {
+        if (!e.lengthComputable) return;
+        document.getElementById('gc-img-status').textContent =
+            (e.loaded / e.total * 100).toFixed(0) + '%';
+    });
+    xhr.addEventListener('load', () => {
+        gc_pending_image_uploading = false;
+        if (xhr.status === 200) {
+            try {
+                const r = JSON.parse(xhr.responseText);
+                gc_pending_image_hash = r.blake3 || null;
+                document.getElementById('gc-img-status').textContent =
+                    gc_pending_image_hash ? 'ready' : 'upload error';
+            } catch(e) {
+                document.getElementById('gc-img-status').textContent = 'parse error';
+            }
+        } else {
+            document.getElementById('gc-img-status').textContent = 'failed';
+        }
+    });
+    xhr.addEventListener('error', () => {
+        gc_pending_image_uploading = false;
+        document.getElementById('gc-img-status').textContent = 'network error';
+    });
+    xhr.open('POST', '/upload');
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
+    xhr.send(file);
+}
+
+function gc_clear_image() {
+    gc_pending_image_hash = null;
+    gc_pending_image_uploading = false;
+    gc_pending_media_type = null;
+    document.getElementById('img-attach-bar').style.display = 'none';
+    document.getElementById('gc-img-preview').src = '';
+    const vp = document.getElementById('gc-video-preview');
+    vp.src = '';
+    vp.style.display = 'none';
+    document.getElementById('gc-img-status').textContent = '';
+}
+
+function show_reply_bar(msg) {
+    gc_pending_reply = msg;
+    const content = document.getElementById('reply-bar-content');
+    content.innerHTML = '';
+    content.appendChild(document.createTextNode('↩ '));
+    const pubEl = document.createElement('span');
+    pubEl.innerHTML = coloredPubHtml(msg.pub_key) + '...';
+    content.appendChild(pubEl);
+    const tsEl = document.createElement('span');
+    tsEl.style.color = '#888';
+    tsEl.textContent = ' [' + fmt_ts(msg.timestamp) + '] ';
+    content.appendChild(tsEl);
+    const preview = (msg.action ? '*' + msg.action : msg.text) || '';
+    content.appendChild(document.createTextNode(preview.slice(0, 30) + (preview.length > 30 ? '…' : '')));
+    document.getElementById('reply-bar').style.display = 'flex';
+    document.getElementById('msg_input').focus();
+}
+
+function hide_reply_bar() {
+    gc_pending_reply = null;
+    document.getElementById('reply-bar').style.display = 'none';
+}
+
+document.getElementById('gc-img-input').addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    e.target.value = '';
+    const isVideo = file.type.startsWith('video/');
+    gc_pending_media_type = isVideo ? 'video' : 'image';
+    const obj = URL.createObjectURL(file);
+    if (isVideo) {
+        document.getElementById('gc-img-preview').style.display = 'none';
+        const vp = document.getElementById('gc-video-preview');
+        vp.src = obj;
+        vp.style.display = '';
+    } else {
+        const prev = document.getElementById('gc-img-preview');
+        prev.src = obj;
+        prev.onload = () => URL.revokeObjectURL(obj);
+        prev.style.display = '';
+        document.getElementById('gc-video-preview').style.display = 'none';
+    }
+    document.getElementById('img-attach-bar').style.display = 'flex';
+    gc_upload_image(file);
+});
+
+document.getElementById('gc-img-remove').addEventListener('click', gc_clear_image);
+document.getElementById('reply-cancel').addEventListener('click', hide_reply_bar);
+
+document.getElementById('msg_input').addEventListener('paste', e => {
+    const item = Array.from(e.clipboardData.items).find(i => i.kind === 'file' && i.type.startsWith('image/'));
+    if (!item) return;
+    e.preventDefault();
+    const ext = item.type.split('/')[1] || 'png';
+    const file = new File([item.getAsFile()], 'paste.' + ext, { type: item.type });
+    gc_pending_media_type = 'image';
+    const obj = URL.createObjectURL(file);
+    const prev = document.getElementById('gc-img-preview');
+    prev.src = obj;
+    prev.onload = () => URL.revokeObjectURL(obj);
+    prev.style.display = '';
+    document.getElementById('gc-video-preview').style.display = 'none';
+    document.getElementById('img-attach-bar').style.display = 'flex';
+    gc_upload_image(file);
+});
+
+// ---- generic file attach ----
+function gc_upload_file(file) {
+    const status = document.getElementById('gc-file-status');
+    status.textContent = 'uploading…';
+    const xhr = new XMLHttpRequest();
+    xhr.upload.addEventListener('progress', e => {
+        if (!e.lengthComputable) return;
+        status.textContent = (e.loaded / e.total * 100).toFixed(0) + '%';
+    });
+    xhr.addEventListener('load', () => {
+        if (xhr.status === 200) {
+            try {
+                const r = JSON.parse(xhr.responseText);
+                const url = r.blake3 ? `${GC_BASE}/blake3/${r.blake3}` : '';
+                if (url) {
+                    const input = document.getElementById('msg_input');
+                    input.value = (input.value ? input.value + ' ' : '') + url;
+                    status.textContent = '';
+                } else {
+                    status.textContent = 'upload error';
+                }
+            } catch(e) { status.textContent = 'parse error'; }
+        } else {
+            status.textContent = 'failed';
+        }
+    });
+    xhr.addEventListener('error', () => { status.textContent = 'network error'; });
+    xhr.open('POST', '/upload');
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
+    xhr.send(file);
+}
+
+document.getElementById('gc-file-input').addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    e.target.value = '';
+    gc_upload_file(file);
+});
+
+document.getElementById('gc-autoplay-btn').addEventListener('click', () => {
+    gc_autoplay_video = !gc_autoplay_video;
+    document.getElementById('gc-autoplay-btn').textContent = 'Autoplay: ' + (gc_autoplay_video ? 'on' : 'off');
+});
+
+// Register service worker for browser notifications (bypasses Chromium's suppression
+// of new Notification() when the browser window has focus in another tab).
+if (!tauri_invoke && 'serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js').catch(e => console.warn('SW register failed:', e));
+}
+
+// Nickname
+const nick_input = document.getElementById('nick_input');
+nick_input.value = localStorage.getItem(LS_NICK) || '';
+nick_input.addEventListener('input', () => localStorage.setItem(LS_NICK, nick_input.value.trim()));
+
+document.getElementById('peer_count_btn').addEventListener('click', e => {
+    e.stopPropagation();
+    open_peer_list_popup(e.clientX, e.clientY);
+});
+
+// ---- scroll to bottom button ----
+function update_scroll_btn() {
+    const c = document.getElementById('messages');
+    const far = c.scrollHeight - c.scrollTop - c.clientHeight > 80;
+    document.getElementById('scroll-to-bottom').style.display = far ? 'block' : 'none';
+}
+document.getElementById('messages').addEventListener('scroll', update_scroll_btn);
+document.getElementById('scroll-to-bottom').addEventListener('click', () => {
+    const c = document.getElementById('messages');
+    c.scrollTop = c.scrollHeight;
+});
+
+// Init: render stored messages immediately, then connect and start retransmit loop
+load_delivered();
+render_messages();
+connect();
+schedule_backoff();
+fetch_status();
+setInterval(fetch_status, 8000);
+</script>
+</body>
+</html>
