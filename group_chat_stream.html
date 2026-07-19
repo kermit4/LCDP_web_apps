@@ -237,6 +237,28 @@ function add_messages(new_msgs) {
 
 const NIBBLE_COLORS = ['#111','#c0392b','#27ae60','#b7950b','#2471a3','#7d3c98','#148f77','#888'];
 
+// 3-bit RGB corners: black, blue, green, cyan, red, magenta, yellow, white
+const PUB_ICON_COLORS = ['#000000','#0000ff','#00ff00','#00ffff','#ff0000','#ff00ff','#ffff00','#ffffff'];
+
+function pub_icon_canvas(pub) {
+    const W = 12, H = 7; // 84 pixels × 3 bits = 252 bits; skip first 4 bits of key (shown in text)
+    const BIT_OFFSET = 4;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    cv.style.cssText = 'width:24px;height:14px;vertical-align:middle;margin-right:3px;image-rendering:pixelated;border:1px solid #aaa;border-radius:1px;flex-shrink:0;display:inline-block;';
+    const ctx = cv.getContext('2d');
+    for (let i = 0; i < W * H; i++) {
+        let c = 0;
+        for (let k = 0; k < 3; k++) {
+            const bp = BIT_OFFSET + i * 3 + k;
+            c = (c << 1) | ((parseInt(pub[bp >> 2], 16) >> (3 - (bp & 3))) & 1);
+        }
+        ctx.fillStyle = PUB_ICON_COLORS[c];
+        ctx.fillRect(i % W, (i / W) | 0, 1, 1);
+    }
+    return cv;
+}
+
 function colored_pub_prefix(pub_key) {
     const wrap = document.createElement('span');
     for (let i = 0; i < 5 && i < pub_key.length; i++) {
@@ -661,6 +683,7 @@ function render_messages() {
         const key_link = document.createElement('span');
         key_link.className = 'pub-key-btn';
         key_link.title = m.pub_key;
+        key_link.appendChild(pub_icon_canvas(m.pub_key));
         key_link.appendChild(colored_pub_prefix(m.pub_key));
         key_link.onclick = function(e) {
             e.stopPropagation();
