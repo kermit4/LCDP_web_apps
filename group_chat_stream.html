@@ -133,9 +133,7 @@ code.ic { background:#e0e0e0; padding:1px 4px; border-radius:2px; font-size:92%;
 
 <script>
 const GROUP_NAME = 'main';
-const LS_KEY = 'gcs_messages_' + GROUP_NAME;
 const LS_NICK = 'gcs_nickname';
-const LS_DELIVERED = 'gcs_delivered_' + GROUP_NAME;
 function chat_stream_id() { return `stream/${my_ed25519}/chat/main.json`; }
 
 const GC_PORT = location.port || 24255;
@@ -154,10 +152,11 @@ let popup_refresh_delivered = null;
 let ws_connect_time = null;
 let ws_uptime_timer = null;
 
-// -- my outgoing stream state -----------------------------------------------
-let ws_identity_confirmed = false; // true after YourEd25519/PleaseSignYourPub received on current WS
-let my_ndjson_buf = new Uint8Array(0);
-let my_pushed_up_to = 0;
+// -- in-memory message store (backend streams are source of truth) ----------
+let messages = [];
+
+// -- own stream byte offset (tracks confirmed stream size for Content sends) -
+let my_stream_byte_offset = 0;
 
 // -- per-peer HTTP stream state ---------------------------------------------
 const peer_stream_controllers = new Map(); // peer_pub -> AbortController
@@ -188,35 +187,13 @@ let   unseen_io    = null;
 
 function strip_0x(s) { return (s && s.startsWith('0x')) ? s.slice(2) : s; }
 
-function load_messages() {
-    try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); } catch(e) { return []; }
-}
-
-function save_messages(msgs) {
-    localStorage.setItem(LS_KEY, JSON.stringify(msgs));
-}
-
-function load_delivered() {
-    try {
-        const raw = JSON.parse(localStorage.getItem(LS_DELIVERED) || '[]');
-        for (const [ts, pubs] of raw) delivered_map.set(ts, new Set(pubs));
-    } catch(e) {}
-}
-
-function save_delivered() {
-    const raw = [];
-    for (const [ts, pubs] of delivered_map) raw.push([ts, [...pubs]]);
-    localStorage.setItem(LS_DELIVERED, JSON.stringify(raw));
-}
-
 function add_messages(new_msgs) {
-    const existing = load_messages();
-    const keys = new Set(existing.map(m => m.pub_key + ':' + m.timestamp));
+    const keys = new Set(messages.map(m => m.pub_key + ':' + m.timestamp));
     const added = [];
     for (const m of new_msgs) {
         const k = m.pub_key + ':' + m.timestamp;
         if (!keys.has(k)) {
-            existing.push(m);
+            messages.push(m);
             keys.add(k);
             added.push(m);
         }
@@ -227,7 +204,6 @@ function add_messages(new_msgs) {
             unseen_keys.add(k);
             if (!seen_accum.has(k)) seen_accum.set(k, 0);
         }
-        save_messages(existing);
         render_messages();
         const from_others = added.filter(m => m.pub_key !== my_ed25519);
         if (from_others.length > 0) notify_new(from_others);
@@ -664,7 +640,7 @@ function open_peer_list_popup(cx, cy) {
 }
 
 function render_messages() {
-    const msgs = load_messages().sort((a, b) => a.timestamp - b.timestamp);
+    const msgs = messages.slice().sort((a, b) => a.timestamp - b.timestamp);
     const container = document.getElementById('messages');
     const at_bottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 30;
     container.innerHTML = '';
@@ -821,40 +797,6 @@ function msg_to_ndjson_line(m) {
     return JSON.stringify(obj) + '\n';
 }
 
-function rebuild_my_stream_from_storage() {
-    const msgs = load_messages()
-        .filter(m => m.pub_key === my_ed25519)
-        .sort((a, b) => a.timestamp - b.timestamp);
-    my_ndjson_buf = new Uint8Array(0);
-    for (const m of msgs) {
-        const bytes = new TextEncoder().encode(msg_to_ndjson_line(m));
-        const next = new Uint8Array(my_ndjson_buf.length + bytes.length);
-        next.set(my_ndjson_buf);
-        next.set(bytes, my_ndjson_buf.length);
-        my_ndjson_buf = next;
-    }
-    my_pushed_up_to = 0;
-}
-
-function append_to_my_stream(m) {
-    const bytes = new TextEncoder().encode(msg_to_ndjson_line(m));
-    const next = new Uint8Array(my_ndjson_buf.length + bytes.length);
-    next.set(my_ndjson_buf);
-    next.set(bytes, my_ndjson_buf.length);
-    my_ndjson_buf = next;
-    push_my_stream_pending();
-}
-
-function push_my_stream_pending() {
-    if (!socket || socket.readyState !== WebSocket.OPEN || !ws_identity_confirmed) return;
-    if (my_pushed_up_to >= my_ndjson_buf.length) return;
-    const chunk = my_ndjson_buf.subarray(my_pushed_up_to);
-    socket.send(JSON.stringify([{ Content: { id: chat_stream_id(), offset: my_pushed_up_to, base64: u8toB64(chunk) } }]));
-    my_pushed_up_to = my_ndjson_buf.length;
-    document.getElementById('stream_info').textContent =
-        'stream: ' + (my_ndjson_buf.length / 1024).toFixed(1) + ' kB';
-}
-
 function connect() {
     if (window.__TAURI__) {
         socket = new WebSocket('ws://localhost:24255/wt');
@@ -864,7 +806,6 @@ function connect() {
         socket = new WebSocket(url);
     }
     socket.onclose = () => {
-        ws_identity_confirmed = false;
         ws_connect_time = null;
         clearInterval(ws_uptime_timer);
         ws_uptime_timer = null;
@@ -878,7 +819,6 @@ function connect() {
         update_ws_uptime();
         ws_uptime_timer = setInterval(update_ws_uptime, 1000);
         document.getElementById('status_text').textContent = 'Connected';
-        // Don't push Content here; wait for backend identity message (YourEd25519/PleaseSignYourPub)
     };
     socket.onmessage = event => {
         let outer;
@@ -889,10 +829,6 @@ function connect() {
                     my_ed25519 = strip_0x((msg.YourEd25519 || msg.PleaseSignYourPub).ed25519);
                     on_identity_known();
                 }
-                ws_identity_confirmed = true;
-                // Rehydrate and push on every (re)connect in case backend restarted
-                rebuild_my_stream_from_storage();
-                push_my_stream_pending();
             } else if ('Forwarded' in msg) {
                 const src = strip_0x(msg.Forwarded.from_ed25519);
                 let fmsgs;
@@ -910,7 +846,6 @@ function connect() {
                                 uel.textContent = String(count);
                                 uel.style.background = count === 0 ? '#c00' : '#3a3';
                             }
-                            save_delivered();
                             if (popup_refresh_delivered) popup_refresh_delivered();
                         }
                     } else if ('GroupChatPing' in fm) {
@@ -964,6 +899,7 @@ async function open_peer_stream(peer_pub) {
         for (;;) {
             const { done, value } = await reader.read();
             if (done) break;
+            if (peer_pub === my_ed25519) my_stream_byte_offset += value.byteLength;
             buf += dec.decode(value, { stream: true });
             let nl;
             while ((nl = buf.indexOf('\n')) !== -1) {
@@ -979,7 +915,7 @@ async function open_peer_stream(peer_pub) {
                     if (obj.image_hash) { entry.image_hash = obj.image_hash; if (obj.media_type) entry.media_type = obj.media_type; }
                     if (obj.reply_to) entry.reply_to = obj.reply_to;
                     const added = add_messages([entry]);
-                    if (added.length > 0 && my_ed25519 && socket && socket.readyState === WebSocket.OPEN) {
+                    if (added.length > 0 && obj.pub_key !== my_ed25519 && my_ed25519 && socket && socket.readyState === WebSocket.OPEN) {
                         const receipts = added.map(m => ({GroupChatDelivered: {group_name: GROUP_NAME, timestamp: m.timestamp}}));
                         socket.send(JSON.stringify([{Forward: {to_ed25519: obj.pub_key, messages: receipts}}]));
                     }
@@ -1003,7 +939,7 @@ function schedule_peer_retry(peer_pub) {
     if (peer_retry_timers.has(peer_pub)) return;
     const t = setTimeout(() => {
         peer_retry_timers.delete(peer_pub);
-        if (known_peers.has(peer_pub)) open_peer_stream(peer_pub);
+        if (known_peers.has(peer_pub) || peer_pub === my_ed25519) open_peer_stream(peer_pub);
     }, 3000);
     peer_retry_timers.set(peer_pub, t);
 }
@@ -1014,7 +950,7 @@ function schedule_peer_retry(peer_pub) {
 function historical_peer_pubs() {
     const pubs = new Set();
     if (!my_ed25519) return pubs;
-    for (const m of load_messages()) {
+    for (const m of messages) {
         if (m.pub_key && m.pub_key !== my_ed25519) pubs.add(m.pub_key);
         if (m.reply_to && m.reply_to.pub_key && m.reply_to.pub_key !== my_ed25519) pubs.add(m.reply_to.pub_key);
     }
@@ -1034,6 +970,7 @@ async function fetch_status() {
         const hist = historical_peer_pubs();
 
         for (const p of known_peers) {
+            if (p === my_ed25519) continue;
             if (!new_active_set.has(p) && !hist.has(p)) close_peer_stream(p);
         }
         known_peers = new_active_set;
@@ -1184,6 +1121,9 @@ function on_identity_known() {
     document.getElementById('msg_input').disabled = false;
     document.getElementById('send_btn').disabled = false;
     render_messages();
+    if (!peer_stream_controllers.has(my_ed25519) && !peer_retry_timers.has(my_ed25519)) {
+        open_peer_stream(my_ed25519);
+    }
 }
 
 const IRC_SHORTHANDS = {
@@ -1215,7 +1155,13 @@ function send_message() {
     input.value = '';
     gc_clear_image();
     hide_reply_bar();
-    append_to_my_stream(m);
+    if (socket && socket.readyState === WebSocket.OPEN) {
+        const line = msg_to_ndjson_line(m);
+        const bytes = new TextEncoder().encode(line);
+        socket.send(JSON.stringify([{ Content: { id: chat_stream_id(), offset: my_stream_byte_offset, base64: u8toB64(bytes) } }]));
+        my_stream_byte_offset += bytes.length;
+        document.getElementById('stream_info').textContent = 'stream: ' + (my_stream_byte_offset / 1024).toFixed(1) + ' kB';
+    }
 }
 
 document.getElementById('send_btn').onclick = send_message;
@@ -1409,7 +1355,6 @@ document.getElementById('scroll-to-bottom').addEventListener('click', () => {
 });
 
 // Init
-load_delivered();
 render_messages();
 connect();
 fetch_status();
