@@ -988,6 +988,16 @@ function schedule_peer_retry(peer_pub) {
 
 // -- status polling: identity + peer discovery ------------------------------
 
+function historical_peer_pubs() {
+    const pubs = new Set();
+    if (!my_ed25519) return pubs;
+    for (const m of load_messages()) {
+        if (m.pub_key && m.pub_key !== my_ed25519) pubs.add(m.pub_key);
+        if (m.reply_to && m.reply_to.pub_key && m.reply_to.pub_key !== my_ed25519) pubs.add(m.reply_to.pub_key);
+    }
+    return pubs;
+}
+
 async function fetch_status() {
     try {
         const r = await fetch('/status.json');
@@ -996,16 +1006,17 @@ async function fetch_status() {
             my_ed25519 = strip_0x(data.public_key);
             on_identity_known();
         }
-        const peers = (data.active_peers || []).map(p => strip_0x(p.pub));
-        const new_peer_set = new Set(peers);
+        const active = (data.active_peers || []).map(p => strip_0x(p.pub));
+        const new_active_set = new Set(active);
+        const hist = historical_peer_pubs();
 
         for (const p of known_peers) {
-            if (!new_peer_set.has(p)) close_peer_stream(p);
+            if (!new_active_set.has(p) && !hist.has(p)) close_peer_stream(p);
         }
-        known_peers = new_peer_set;
+        known_peers = new_active_set;
         document.getElementById('peer_count').textContent = known_peers.size;
 
-        for (const p of peers) {
+        for (const p of new Set([...active, ...hist])) {
             if (!peer_stream_controllers.has(p) && !peer_retry_timers.has(p)) {
                 open_peer_stream(p);
             }
