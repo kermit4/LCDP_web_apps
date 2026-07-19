@@ -705,23 +705,18 @@ function appendCueBytes(line) {
     cueOffset = cueBuf.length;
 }
 
-// Push complete BLOCK_SIZE blocks from cueBuf (mirrors pushPendingBlocks).
-// Pass isEof=true at recording stop to flush the final partial block.
+// Push all available cue bytes immediately; backend reassembles in real time.
+// Pass isEof=true at recording stop to mark the stream as complete.
 function pushPendingCueBlocks(isEof) {
     const sid = cueSid();
     if (!sid || !socket || socket.readyState !== WebSocket.OPEN) return;
-    while (true) {
-        const avail = cueBuf.length - cuePushed;
-        if (!isEof && avail < BLOCK_SIZE) break;
-        if (avail === 0) break;
-        const len = isEof ? avail : BLOCK_SIZE;
-        const chunk = cueBuf.subarray(cuePushed, cuePushed + len);
-        const msg = { Content: { id: sid, offset: cuePushed, base64: u8toB64(chunk) } };
-        if (isEof && cuePushed + len >= cueBuf.length) msg.Content.eof = cueBuf.length;
-        socket.send(JSON.stringify([msg]));
-        cuePushed += len;
-        if (isEof) break;
-    }
+    const avail = cueBuf.length - cuePushed;
+    if (avail === 0) return;
+    const chunk = cueBuf.subarray(cuePushed, cueBuf.length);
+    const msg = { Content: { id: sid, offset: cuePushed, base64: u8toB64(chunk) } };
+    if (isEof) msg.Content.eof = cueBuf.length;
+    socket.send(JSON.stringify([msg]));
+    cuePushed = cueBuf.length;
 }
 
 function recordCue(videoOffset, timeSinceStartMs) {
