@@ -221,7 +221,6 @@ function pub_icon_canvas(pub) {
     const BIT_OFFSET = 4;
     const cv = document.createElement('canvas');
     cv.width = W; cv.height = H;
-    cv.style.cssText = 'width:24px;height:14px;vertical-align:middle;margin-right:3px;image-rendering:pixelated;border:1px solid #aaa;border-radius:1px;flex-shrink:0;display:inline-block;';
     const ctx = cv.getContext('2d');
     for (let i = 0; i < W * H; i++) {
         let c = 0;
@@ -232,7 +231,11 @@ function pub_icon_canvas(pub) {
         ctx.fillStyle = PUB_ICON_COLORS[c];
         ctx.fillRect(i % W, (i / W) | 0, 1, 1);
     }
-    return cv;
+    // Use <img> with data URL so browsers don't discard pixel data when the tab is hidden
+    const img = document.createElement('img');
+    img.src = cv.toDataURL();
+    img.style.cssText = 'width:24px;height:14px;vertical-align:middle;margin-right:3px;image-rendering:pixelated;border:1px solid #aaa;border-radius:1px;flex-shrink:0;display:inline-block;';
+    return img;
 }
 
 function colored_pub_prefix(pub_key) {
