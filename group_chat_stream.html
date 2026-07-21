@@ -185,6 +185,66 @@ let   visible_keys = new Set();
 let   seen_ticker  = null;
 let   unseen_io    = null;
 
+// -- localStorage persistence: seen highlights & delivered receipts ----------
+const LS_SEEN = 'gcs_seen';
+let ls_seen = new Set();
+
+function load_seen() {
+    try {
+        const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+        const arr = JSON.parse(localStorage.getItem(LS_SEEN) || '[]');
+        ls_seen = new Set(arr.filter(k => {
+            const ts = parseInt(k.split(':')[1], 10);
+            return !isNaN(ts) && ts > cutoff;
+        }));
+    } catch(e) { ls_seen = new Set(); }
+}
+
+let save_seen_timer = null;
+function schedule_save_seen() {
+    if (save_seen_timer) return;
+    save_seen_timer = setTimeout(() => {
+        save_seen_timer = null;
+        const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+        const arr = [...ls_seen].filter(k => {
+            const ts = parseInt(k.split(':')[1], 10);
+            return !isNaN(ts) && ts > cutoff;
+        });
+        ls_seen = new Set(arr);
+        try { localStorage.setItem(LS_SEEN, JSON.stringify(arr)); } catch(e) {}
+    }, 500);
+}
+
+function ls_delivered_key() { return 'gcs_delivered_' + (my_ed25519 || ''); }
+
+function load_delivered() {
+    if (!my_ed25519) return;
+    try {
+        const obj = JSON.parse(localStorage.getItem(ls_delivered_key()) || '{}');
+        for (const [ts_str, pubs] of Object.entries(obj)) {
+            const ts = parseInt(ts_str, 10);
+            if (!isNaN(ts) && Array.isArray(pubs) && pubs.length > 0) {
+                if (!delivered_map.has(ts)) delivered_map.set(ts, new Set());
+                for (const p of pubs) delivered_map.get(ts).add(p);
+            }
+        }
+    } catch(e) {}
+}
+
+let save_delivered_timer = null;
+function schedule_save_delivered() {
+    if (save_delivered_timer || !my_ed25519) return;
+    save_delivered_timer = setTimeout(() => {
+        save_delivered_timer = null;
+        const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+        const obj = {};
+        for (const [ts, pubs] of delivered_map) {
+            if (ts > cutoff && pubs.size > 0) obj[ts] = [...pubs];
+        }
+        try { localStorage.setItem(ls_delivered_key(), JSON.stringify(obj)); } catch(e) {}
+    }, 500);
+}
+
 function strip_0x(s) { return (s && s.startsWith('0x')) ? s.slice(2) : s; }
 
 function add_messages(new_msgs) {
@@ -201,11 +261,13 @@ function add_messages(new_msgs) {
     if (added.length > 0) {
         for (const m of added) {
             const k = m.pub_key + ':' + m.timestamp;
-            unseen_keys.add(k);
-            if (!seen_accum.has(k)) seen_accum.set(k, 0);
+            if (!ls_seen.has(k)) {
+                unseen_keys.add(k);
+                if (!seen_accum.has(k)) seen_accum.set(k, 0);
+            }
         }
         render_messages();
-        const from_others = added.filter(m => m.pub_key !== my_ed25519);
+        const from_others = added.filter(m => m.pub_key !== my_ed25519 && !ls_seen.has(m.pub_key + ':' + m.timestamp));
         if (from_others.length > 0) notify_new(from_others);
     }
     return added;
@@ -325,6 +387,8 @@ function tick_seen() {
         const el = unseen_els.get(key);
         if (el) apply_hl(el, 0);
         unseen_els.delete(key);
+        ls_seen.add(key);
+        schedule_save_seen();
     }
     if (unseen_keys.size > 0 && visible_keys.size > 0 && win_focused)
         seen_ticker = requestAnimationFrame(tick_seen);
@@ -849,6 +913,7 @@ function connect() {
                                 uel.textContent = String(count);
                                 uel.style.background = count === 0 ? '#c00' : '#3a3';
                             }
+                            schedule_save_delivered();
                             if (popup_refresh_delivered) popup_refresh_delivered();
                         }
                     } else if ('GroupChatPing' in fm) {
@@ -1121,6 +1186,7 @@ function on_identity_known() {
     const el = document.getElementById('my_pub_display');
     el.textContent = my_ed25519.substring(0, 16) + '...';
     el.title = my_ed25519;
+    load_delivered();
     document.getElementById('msg_input').disabled = false;
     document.getElementById('send_btn').disabled = false;
     render_messages();
@@ -1358,6 +1424,7 @@ document.getElementById('scroll-to-bottom').addEventListener('click', () => {
 });
 
 // Init
+load_seen();
 render_messages();
 connect();
 fetch_status();
