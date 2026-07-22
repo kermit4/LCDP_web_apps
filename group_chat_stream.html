@@ -1022,6 +1022,11 @@ function historical_peer_pubs() {
         if (m.pub_key && m.pub_key !== my_ed25519) pubs.add(m.pub_key);
         if (m.reply_to && m.reply_to.pub_key && m.reply_to.pub_key !== my_ed25519) pubs.add(m.reply_to.pub_key);
     }
+    // delivered_map remembers who acknowledged our messages (loaded from localStorage,
+    // so it knows about peers before any of their messages have streamed in this session)
+    for (const pubs_set of delivered_map.values()) {
+        for (const p of pubs_set) if (p !== my_ed25519) pubs.add(p);
+    }
     return pubs;
 }
 
