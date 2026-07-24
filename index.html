@@ -1,5 +1,17 @@
-<html><body>
-        These links all require the websocket backend to be running, as it must have been to get to this page.  
+<html><head>
+<style>
+.pp-chat { color: #0055cc; font-family: sans-serif; font-weight: 600; text-decoration: none; margin-left: 10px; }
+.pp-chat:hover { text-decoration: underline; }
+.peer-pub { font-family: 'Courier New', monospace; }
+#peer-list { font-family: 'Courier New', monospace; font-size: 13px; }
+#peer-list div { margin: 2px 0; display: flex; align-items: center; }
+</style>
+</head><body>
+        These links all require the websocket backend to be running, as it must have been to get to this page.
+
+<p><b>Peers (<span id=peer_count>...</span>):</b>
+<div id=peer-list></div>
+
 <p><a href=group_chat.html>group_chat.html</a> GO HERE NOW, SAY HI
 <p><a href=group_chat_stream.html>group_chat_stream.html</a> expiremental /stream/ backend approach of group chat, instead of pure message based, that is persistant on the nodes and cached by peers
 <p><a href=share_files.html>share_files.html</a> upload files &mdash; SHA-256 addressed, shareable by link
@@ -36,5 +48,50 @@ attempts to host HTML and components on the network:
 
 <p>-- if i dont respond to the group chat, try kermit444 on Telegram or https://matrix.to/#/@k3rmit4:matrix.org
 
+<script>
+const BASE = `${location.protocol}//${location.hostname}:${location.port || 24255}`;
+const NIBBLE_COLORS = ['#111','#c0392b','#27ae60','#b7950b','#2471a3','#7d3c98','#148f77','#888'];
+
+function strip_0x(s) { return (s && s.startsWith('0x')) ? s.slice(2) : s; }
+
+function coloredPubHtml(pub) {
+    let html = '';
+    for (let i = 0; i < 5 && i < pub.length; i++) {
+        const nibble = parseInt(pub[i], 16);
+        const color  = NIBBLE_COLORS[nibble & 7];
+        if (nibble & 8) {
+            html += `<span style="background:${color};color:#fff;padding:0 1px">${pub[i]}</span>`;
+        } else {
+            html += `<span style="color:${color}">${pub[i]}</span>`;
+        }
+    }
+    return html;
+}
+
+function peer_links_html(pub) {
+    return `<a href="chat.html?ed25519=${encodeURIComponent(pub)}" class="pp-chat" onclick="event.preventDefault();window.open(this.href,'_blank','width=1000,height=720,noopener,noreferrer')">&#x1F4AC; chat &rarr;</a>` +
+        `<a href="pong.html?ed25519=${encodeURIComponent(pub)}" class="pp-chat" onclick="event.preventDefault();window.open(this.href,'_blank','width=1000,height=720,noopener,noreferrer')">&#x1F3D3; pong &rarr;</a>` +
+        `<a href="video.html?ed25519=${encodeURIComponent(pub)}" class="pp-chat" onclick="event.preventDefault();window.open(this.href,'_blank','width=1000,height=720,noopener,noreferrer')">&#x1F4F9; video &rarr;</a>` +
+        `<a href="http://127.0.0.1:24255/latest/${encodeURIComponent(pub)}/" target="_blank" class="pp-chat">&#x1F3E0; home page &rarr;</a>`;
+}
+
+async function refresh_peers() {
+    try {
+        const r = await fetch(`${BASE}/status.json`);
+        const data = await r.json();
+        const peers = (data.active_peers || []).map(p => strip_0x(p.pub));
+        document.getElementById('peer_count').textContent = peers.length;
+        const list = document.getElementById('peer-list');
+        list.innerHTML = '';
+        for (const pub of peers) {
+            const row = document.createElement('div');
+            row.innerHTML = `<span class="peer-pub">${coloredPubHtml(pub)}${pub.slice(5)}</span>` + peer_links_html(pub);
+            list.appendChild(row);
+        }
+    } catch(e) {}
+}
+refresh_peers();
+setInterval(refresh_peers, 5000);
+</script>
 
 </body></html>
